@@ -3,6 +3,7 @@ import struct
 from collections import defaultdict
 
 from construct import ConstructError
+from tabulate import tabulate
 
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
     ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER
@@ -134,23 +135,18 @@ class AccessParser(object):
         access_table = AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs)
         return access_table.parse()
 
-    def dump_database(self, out_path):
+    def print_database(self):
         """
-        Iterate all user tables and dump data from tables to a file
+        Print data from all database tables
         """
-        with open(out_path, 'w') as f:
-            table_names = self.catalog
-            for table_name in table_names:
-                table = self.parse_table(table_name)
-                if not table:
-                    continue
-                columns = list(table.keys())
-                f.write('TABLE NAME: {}\r\n'.format(table_name))
-                f.write('\t'.join(columns) + '\r\n')
-                if columns:
-                    for i in range(len(table[columns[0]])):
-                        f.write('\t'.join([str(str(table[column][i]).encode("utf-8")) for column in columns]) + '\r\n')
-                f.write('TABLE_END\r\n\r\n')
+        table_names = self.catalog
+        for table_name in table_names:
+            table = self.parse_table(table_name)
+            if not table:
+                continue
+            print(f'TABLE NAME: {table_name}\r\n')
+            print(tabulate(table, headers="keys"))
+            print('\r\n\r\n\r\n\r\n')
 
 
 class AccessTable(object):

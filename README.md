@@ -23,8 +23,8 @@ print(db.catalog)
 # Tables are stored as defaultdict(list) -- table[column][row_index]
 table = db.parse_table("table_name")
 
-# Pretty print all tables to a file
-db.dump_database("/path/to/output/file.txt")
+# Pretty print data from al all tables
+db.print_database()
 
 ```
 

@@ -2,6 +2,8 @@ import logging
 import os
 import struct
 
+import uuid
+
 TYPE_BOOLEAN = 1
 TYPE_INT8 = 2
 TYPE_INT16 = 3
@@ -44,6 +46,8 @@ def parse_type(data_type, buffer, length=None, version=3):
         offset = length
     elif data_type == TYPE_GUID:
         parsed = buffer[:16]
+        guid = uuid.UUID(parsed.hex())
+        parsed = str(guid)
     elif data_type == TYPE_96_bit_17_BYTES:
         parsed = buffer[:17]
     elif data_type == TYPE_TEXT:
