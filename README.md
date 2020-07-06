@@ -27,7 +27,7 @@ print(db.catalog)
 # Tables are stored as defaultdict(list) -- table[column][row_index]
 table = db.parse_table("table_name")
 
-# Pretty print all tables to a file
+# Pretty print all tables
 db.print_database()
 
 ```
