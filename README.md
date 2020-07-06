@@ -1,9 +1,10 @@
 # AccessDB Parser
-Microsoft Access (.mdb / .accdb) database files parser. access_parser parsing logic is fully written in python and works without any external binary dependencies.
+Microsoft Access (.mdb / .accdb) database files parser. The parsing logic is fully written in python and works without any external binary dependencies.
 
 # Installing
-`pip install access-parser`
+Use pip: `pip install access-parser`
 
+Or install manually:
 ```bash
 git clone https://github.com/ClarotyICS/access_parser.git
 cd access_parser
