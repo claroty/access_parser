@@ -28,7 +28,7 @@ print(db.catalog)
 table = db.parse_table("table_name")
 
 # Pretty print all tables to a file
-db.dump_database("/path/to/output/file.txt")
+db.print_database("/path/to/output/file.txt")
 
 ```
 
