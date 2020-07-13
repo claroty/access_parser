@@ -406,7 +406,7 @@ class AccessTable(object):
         offset = min(x.column_index for x in columns)
         column_dict = {x.column_index - offset: x for x in columns}
         # If column index is not unique try best effort
-        if column_dict != len(columns):
+        if len(column_dict) != len(columns):
             # create a dict of id to column to make it easier to access
             column_dict = {x.column_id: x for x in columns}
 
