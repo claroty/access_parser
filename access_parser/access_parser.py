@@ -401,16 +401,18 @@ class AccessTable(object):
 
         # column_index is more accurate(id is always incremented so it is wrong when a column is deleted).
         # Some tables like the catalog don't have index, so if indexes are 0 use id.
-        if len([x for x in columns if x.column_index == 0]) == len(columns):
+
+        # create a dict of index to column to make it easier to access. offset is used to make this zero based
+        offset = min(x.column_index for x in columns)
+        column_dict = {x.column_index - offset: x for x in columns}
+        # If column index is not unique try best effort
+        if len(column_dict) != len(columns):
             # create a dict of id to column to make it easier to access
-            columns = {x.column_id: x for x in columns}
-        else:
-            # create a dict of index to column to make it easier to access. offset is used to make this zero based
-            offset = min(x.column_index for x in columns)
-            columns = {x.column_index - offset: x for x in columns}
-        if len(columns) != table_header.column_count:
-            logging.debug(f"expected {table_header.column_count} columns got {len(columns)}")
-        return columns, table_header
+            column_dict = {x.column_id: x for x in columns}
+
+        if len(column_dict) != table_header.column_count:
+            logging.debug(f"expected {table_header.column_count} columns got {len(column_dict)}")
+        return column_dict, table_header
 
     def _merge_table_data(self, first_page):
         """
