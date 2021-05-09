@@ -1,8 +1,9 @@
 import logging
 import os
 import struct
-
 import uuid
+import math
+from datetime import datetime, timedelta
 
 TYPE_BOOLEAN = 1
 TYPE_INT8 = 2
@@ -24,6 +25,21 @@ TABLE_PAGE_MAGIC = b"\x02\x01"
 DATA_PAGE_MAGIC = b"\x01\x01"
 
 
+ACCESS_EPOCH = datetime(1899, 12, 30)
+
+
+# https://stackoverflow.com/questions/45560782
+def mdb_date_to_readable(double_time):
+    dtime_bytes = struct.pack("Q", double_time)
+
+    dtime_double = struct.unpack('<d', dtime_bytes)[0]
+    dtime_frac, dtime_whole = math.modf(dtime_double)
+    dtime = (ACCESS_EPOCH + timedelta(days=dtime_whole) + timedelta(days=dtime_frac))
+    if dtime == ACCESS_EPOCH:
+        return "(Empty Date)"
+    return str(dtime)
+
+
 def parse_type(data_type, buffer, length=None, version=3):
     parsed = ""
     # Bool or int8
@@ -40,7 +56,8 @@ def parse_type(data_type, buffer, length=None, version=3):
     elif data_type == TYPE_FLOAT64:
         parsed = struct.unpack_from("d", buffer)[0]
     elif data_type == TYPE_DATETIME:
-        parsed = struct.unpack_from("q", buffer)[0]
+        double_datetime = struct.unpack_from("q", buffer)[0]
+        parsed = mdb_date_to_readable(double_datetime)
     elif data_type == TYPE_BINARY:
         parsed = buffer[:length]
         offset = length
