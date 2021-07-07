@@ -140,6 +140,10 @@ def parse_table_data(buffer, real_index_count, column_count, version=3):
 
     VARIOUS_DEC = VARIOUS_DEC_V3 if version == 3 else VARIOUS_DEC_V4
 
+    VARIOUS_NUMERIC_V3 = Struct("prec" / Int8ul, "scale" / Int8ul, "unknown" / Int32ul)
+    VARIOUS_NUMERIC_V4 = Struct("prec" / Int8ul, "scale" / Int8ul, "unknown" / Int16ul)
+    VARIOUS_NUMERIC = VARIOUS_NUMERIC_V3 if version == 3 else VARIOUS_NUMERIC_V4
+
     COLUMN = Struct(
         "type" / Int8ul,
         "ver4_unknown_3" /  If(lambda x: version > 3, Int32ul),
@@ -152,6 +156,7 @@ def parse_table_data(buffer, real_index_count, column_count, version=3):
                                10: VARIOUS_TEXT,
                                11: VARIOUS_TEXT,
                                12: VARIOUS_TEXT,
+                               16: VARIOUS_NUMERIC,
 
                                1: VARIOUS_DEC,
                                2: VARIOUS_DEC,
@@ -162,7 +167,7 @@ def parse_table_data(buffer, real_index_count, column_count, version=3):
                                7: VARIOUS_DEC,
                                8: VARIOUS_DEC,
 
-                           }, default=version_specific(version, Padding(6), Padding(4))),
+                           }, default=version_specific(version, Bytes(6), Bytes(4))),
         "column_flags" / version_specific(version, VERSION_3_FLAGS, VERSION_4_FLAGS),
         "ver4_unknown_4" / If(lambda x: version > 3, Int32ul),
         "fixed_offset" / Int16ul,

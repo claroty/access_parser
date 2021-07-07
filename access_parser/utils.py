@@ -40,6 +40,20 @@ def mdb_date_to_readable(double_time):
     return str(dtime)
 
 
+def numeric_to_string(bytes_num, scale=6):
+    neg, num1, num2, num3, num4 = struct.unpack("<BIIII", bytes_num)
+    full_number = (num1 << 96) + (num2 << 64) + (num3 << 32) + num4
+    full_number = str(full_number)
+    # If scale is 6 149804168 will be 149.804168 - 6 from the end.
+    # If scale is bigger than the number ignore the scale(1498 will remain 1498)
+    if len(full_number) > scale:
+        dot_len = len(full_number) - scale
+        full_number = full_number[:dot_len] + "." + full_number[dot_len:]
+    numeric_string = "-" if neg else ""
+    numeric_string += full_number
+    return numeric_string
+
+
 def parse_type(data_type, buffer, length=None, version=3):
     parsed = ""
     # Bool or int8

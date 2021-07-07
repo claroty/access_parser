@@ -7,7 +7,8 @@ from tabulate import tabulate
 
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
     ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER
-from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file
+from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file, numeric_to_string, \
+    TYPE_96_bit_17_BYTES
 
 # Page sizes
 PAGE_SIZE_V3 = 0x800
@@ -353,12 +354,21 @@ class AccessTable(object):
                 continue
 
             relative_obj_data = original_record[rel_start + jump_table_addition: rel_end + jump_table_addition]
+            # Parse types that require column data here, call parse_type on all other types
             if column.type == TYPE_MEMO:
                 try:
                     parsed_type = self._parse_memo(relative_obj_data, column)
                 except ConstructError:
                     logging.warning("Failed to parse memo field. Using data as bytes")
                     parsed_type = relative_obj_data
+            elif column.type == TYPE_96_bit_17_BYTES:
+                if len(relative_obj_data) != 17:
+                    logging.warning(f"Relative numeric field has invalid length {len(relative_obj_data)}, expected 17")
+                    parsed_type = relative_obj_data
+                else:
+                    # Get scale or None
+                    scale = column.get('various', {}).get('scale', 6)
+                    parsed_type = numeric_to_string(relative_obj_data, scale)
             else:
                 parsed_type = parse_type(column.type, relative_obj_data, len(relative_obj_data), version=self.version)
             self.parsed_table[col_name].append(parsed_type)
