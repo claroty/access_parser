@@ -434,7 +434,12 @@ class AccessTable(object):
         parsed_memo = MEMO.parse(relative_obj_data)
         if parsed_memo.memo_length & 0x80000000:
             logging.debug("memo data inline")
-            memo_data = relative_obj_data[parsed_memo.memo_end:]
+            inline_memo_length = parsed_memo.memo_length & 0x3FFFFFFF
+            if len(relative_obj_data) < parsed_memo.memo_end + inline_memo_length:
+                logging.warning("Inline memo field has invalid length using full data")
+                memo_data = relative_obj_data[parsed_memo.memo_end:]
+            else:
+                memo_data = relative_obj_data[parsed_memo.memo_end:parsed_memo.memo_end + inline_memo_length]
             memo_type = TYPE_TEXT
         elif parsed_memo.memo_length & 0x40000000:
             logging.debug("LVAL type 1")
