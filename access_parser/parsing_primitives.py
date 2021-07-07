@@ -199,12 +199,12 @@ def parse_data_page_header(buffer, version=3):
 # buffer should be the record data in reverse
 def parse_relative_object_metadata_struct(buffer, variable_jump_tables_cnt=0, version=3):
     return Struct(
-        "variable_length_field_count" / version_specific(version, Int8ul, Int16ul),
-        "variable_length_jump_table" / If(lambda x: version == 3, Array(variable_jump_tables_cnt, Int8ul)),
+        "variable_length_field_count" / version_specific(version, Int8ub, Int16ub),
+        "variable_length_jump_table" / If(lambda x: version == 3, Array(variable_jump_tables_cnt, Int8ub)),
         # This currently supports up to 255 columns for versions > 3
         "variable_length_field_offsets" / version_specific(version,
-                                                           Array(lambda x: x.variable_length_field_count, Int8ul),
+                                                           Array(lambda x: x.variable_length_field_count, Int8ub),
                                                            Array(lambda x: x.variable_length_field_count & 0xff,
-                                                                 Int16ul)),
-        "var_len_count" / version_specific(version, Int8ul, Int16ul),
+                                                                 Int16ub)),
+        "var_len_count" / version_specific(version, Int8ub, Int16ub),
         "relative_metadata_end" / Tell).parse(buffer)

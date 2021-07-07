@@ -283,10 +283,7 @@ class AccessTable(object):
         :return: parsed relative record metadata
         """
         if self.version > 3:
-            reverse_record = reverse_record[null_table_length + 1:]
-            # Not sure why we sometimes get an extra 0
-            if len(reverse_record) > 1 and reverse_record[0] == 0:
-                reverse_record = reverse_record[1:]
+            reverse_record = reverse_record[null_table_length:]
             return parse_relative_object_metadata_struct(reverse_record, version=self.version)
         # Parse relative metadata.
         # Metadata is from the end of the record(reverse_record is used here)
@@ -349,12 +346,6 @@ class AccessTable(object):
                 rel_end = relative_record_metadata.var_len_count
             else:
                 rel_end = relative_offsets[i + 1]
-            # Not sure why
-            if self.version > 3:
-                if rel_end > len(original_record):
-                    rel_end = rel_end & 0xff
-                if rel_start > len(original_record):
-                    rel_start = rel_start & 0xff
 
             # if rel_start and rel_end are the same there is no data in this slot
             if rel_start == rel_end:
