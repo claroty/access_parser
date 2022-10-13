@@ -59,7 +59,7 @@ def numeric_to_string(bytes_num, scale=6):
     return numeric_string
 
 
-def parse_type(data_type, buffer, length=None, version=3):
+def parse_type(data_type, buffer, length=None, version=3, config=None):
     parsed = ""
     # Bool or int8
     if data_type == TYPE_INT8:
@@ -95,7 +95,8 @@ def parse_type(data_type, buffer, length=None, version=3):
             else:
                 parsed = buffer.decode("utf-16", errors='ignore')
         else:
-            parsed = buffer.decode('utf-8', errors='ignore')
+            charset = config.jet3_charset if config else 'utf-8'
+            parsed = buffer.decode(charset, errors='ignore')
     else:
         logging.debug(f"parse_type - unsupported data type: {data_type}")
     return parsed
