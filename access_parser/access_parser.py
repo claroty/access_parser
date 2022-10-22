@@ -36,20 +36,10 @@ class TableObj(object):
         self.linked_pages = []
 
 
-class Config(object):
-    def __init__(self, jet3_charset='utf-8'):
-        self.jet3_charset = jet3_charset
-
-
-default_config = Config(
-    jet3_charset='utf-8'
-)
-
-
 class AccessParser(object):
-    def __init__(self, db_path, config=default_config):
+    def __init__(self, db_path, encoding='utf-8'):
         self.db_data = read_db_file(db_path)
-        self.config = config
+        self.encoding = encoding
 
         self._parse_file_header(self.db_data)
         self._table_defs, self._data_pages, self._all_pages = categorize_pages(self.db_data, self.page_size)
@@ -112,7 +102,7 @@ class AccessParser(object):
         """
         catalog_page = self._tables_with_data[2 * self.page_size]
         access_table = AccessTable(catalog_page, self.version, self.page_size, self._data_pages, self._table_defs)
-        catalog = access_table.parse(self.config)
+        catalog = access_table.parse(encoding=self.encoding)
         tables_mapping = {}
         for i, table_name in enumerate(catalog['Name']):
             # Visible user tables are type 1
@@ -146,7 +136,7 @@ class AccessParser(object):
                 logging.error(f"Could not find table {table_name} offset {table_offset}")
                 return
         access_table = AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs)
-        return access_table.parse(self.config)
+        return access_table.parse(encoding=self.encoding)
 
     def print_database(self):
         """
@@ -179,7 +169,7 @@ class AccessTable(object):
             parsed_table[column.col_name_str] = ""
         return parsed_table
 
-    def parse(self, config=default_config):
+    def parse(self, encoding='utf-8'):
         """
         This is the main table parsing function. We go through all of the data pages linked to the table, separate each
         data page to rows(records) and parse each record.
@@ -208,7 +198,7 @@ class AccessTable(object):
                     overflow_rec_ptr = struct.unpack("<I", overflow_rec_ptr)[0]
                     record = self._get_overflow_record(overflow_rec_ptr)
                     if record:
-                        self._parse_row(record, config)
+                        self._parse_row(record, encoding)
                     continue
                 # First record is actually the last one - from offset until the end of the data
                 if not last_offset:
@@ -217,10 +207,10 @@ class AccessTable(object):
                     record = original_data[rec_offset:last_offset]
                 last_offset = rec_offset
                 if record:
-                    self._parse_row(record, config)
+                    self._parse_row(record, encoding)
         return self.parsed_table
 
-    def _parse_row(self, record, config):
+    def _parse_row(self, record, encoding):
         """
         parse record (row) of data. First parse all fixed-length data field and then parse the relative length data.
         :param record: the current row data
@@ -253,16 +243,16 @@ class AccessTable(object):
                 relative_records_column_map[i] = column
                 continue
 
-            self._parse_fixed_length_data(record, column, null_table, config)
+            self._parse_fixed_length_data(record, column, null_table, encoding)
         if relative_records_column_map:
             relative_records_column_map = dict(sorted(relative_records_column_map.items()))
             metadata = self._parse_dynamic_length_records_metadata(reverse_record, original_record,
                                                                    null_table_len)
             if not metadata:
                 return
-            self._parse_dynamic_length_data(original_record, metadata, relative_records_column_map, config)
+            self._parse_dynamic_length_data(original_record, metadata, relative_records_column_map, encoding)
 
-    def _parse_fixed_length_data(self, original_record, column, null_table, config):
+    def _parse_fixed_length_data(self, original_record, column, null_table, encoding):
         """
         Parse fixed-length data from record
         :param original_record: unmodified record
@@ -283,7 +273,7 @@ class AccessTable(object):
                 logging.error(f"Column offset is bigger than the length of the record {column.fixed_offset}")
                 return
             record = original_record[column.fixed_offset:]
-            parsed_type = parse_type(column.type, record, version=self.version, config=config)
+            parsed_type = parse_type(column.type, record, version=self.version, encoding=encoding)
         self.parsed_table[column_name].append(parsed_type)
 
     def _parse_dynamic_length_records_metadata(self, reverse_record, original_record, null_table_length):
@@ -338,7 +328,7 @@ class AccessTable(object):
         return relative_record_metadata
 
     def _parse_dynamic_length_data(self, original_record, relative_record_metadata,
-                                   relative_records_column_map, config):
+                                   relative_records_column_map, encoding):
         """
         Parse dynamic (non fixed length) records from row
         :param original_record: full unmodified record
@@ -369,7 +359,7 @@ class AccessTable(object):
             # Parse types that require column data here, call parse_type on all other types
             if column.type == TYPE_MEMO:
                 try:
-                    parsed_type = self._parse_memo(relative_obj_data, column, config)
+                    parsed_type = self._parse_memo(relative_obj_data, column, encoding)
                 except ConstructError:
                     logging.warning("Failed to parse memo field. Using data as bytes")
                     parsed_type = relative_obj_data
@@ -382,7 +372,7 @@ class AccessTable(object):
                     scale = column.get('various', {}).get('scale', 6)
                     parsed_type = numeric_to_string(relative_obj_data, scale)
             else:
-                parsed_type = parse_type(column.type, relative_obj_data, len(relative_obj_data), version=self.version, config=config)
+                parsed_type = parse_type(column.type, relative_obj_data, len(relative_obj_data), version=self.version, encoding=encoding)
             self.parsed_table[col_name].append(parsed_type)
 
     def _get_table_columns(self):
@@ -442,7 +432,7 @@ class AccessTable(object):
             data = data + table[parsed_header.header_end:]
         return data
 
-    def _parse_memo(self, relative_obj_data, column, config):
+    def _parse_memo(self, relative_obj_data, column, encoding):
         logging.debug(f"Parsing memo field {relative_obj_data}")
         parsed_memo = MEMO.parse(relative_obj_data)
         if parsed_memo.memo_length & 0x80000000:
@@ -464,7 +454,7 @@ class AccessTable(object):
             memo_data = relative_obj_data
             memo_type = column.type
         if memo_data:
-            parsed_type = parse_type(memo_type, memo_data, len(memo_data), version=self.version, config=config)
+            parsed_type = parse_type(memo_type, memo_data, len(memo_data), version=self.version, encoding=encoding)
             return parsed_type
 
     def _get_overflow_record(self, record_pointer):
