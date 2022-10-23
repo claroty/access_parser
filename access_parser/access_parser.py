@@ -38,6 +38,11 @@ class TableObj(object):
 
 class AccessParser(object):
     def __init__(self, db_path, encoding='utf-8'):
+        """
+        Inits AccessParser
+        :param db_path: path to the processed db file
+        :param encoding: encoding used for Jet3 files
+        """
         self.db_data = read_db_file(db_path)
         self.encoding = encoding
 
@@ -173,6 +178,7 @@ class AccessTable(object):
         """
         This is the main table parsing function. We go through all of the data pages linked to the table, separate each
         data page to rows(records) and parse each record.
+        :param encoding: encoding used to parse Jet3
         :return defaultdict(list) with the parsed data -- table[column][row_index]
         """
         if not self.table.linked_pages:
@@ -214,6 +220,7 @@ class AccessTable(object):
         """
         parse record (row) of data. First parse all fixed-length data field and then parse the relative length data.
         :param record: the current row data
+        :param encoding: encoding used to parse Jet3
         :return:
         """
         original_record = record
@@ -258,6 +265,7 @@ class AccessTable(object):
         :param original_record: unmodified record
         :param column: column this data belongs to
         :param null_table: null table of the row
+        :param encoding: encoding used to parse Jet3
         """
         column_name = column.col_name_str
         # Boolean fields are encoded in the null table
@@ -334,6 +342,7 @@ class AccessTable(object):
         :param original_record: full unmodified record
         :param relative_record_metadata: parsed record metadata
         :param relative_records_column_map: relative records colum mapping {index: column}
+        :param encoding: encoding used to parse Jet3
         """
         relative_offsets = relative_record_metadata.variable_length_field_offsets
         jump_table_addition = 0
