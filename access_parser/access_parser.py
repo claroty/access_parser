@@ -248,7 +248,8 @@ class AccessTable(object):
                                                                    null_table_len)
             if not metadata:
                 return
-            self._parse_dynamic_length_data(original_record, metadata, relative_records_column_map)
+            if metadata.variable_length_field_offsets:
+                self._parse_dynamic_length_data(original_record, metadata, relative_records_column_map)
 
     def _parse_fixed_length_data(self, original_record, column, null_table):
         """
