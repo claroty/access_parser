@@ -6,7 +6,7 @@ from construct import ConstructError
 from tabulate import tabulate
 
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
-    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER
+    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER, LVPROP
 from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file, numeric_to_string, \
     TYPE_96_bit_17_BYTES, TYPE_OLE
 
@@ -112,6 +112,33 @@ class AccessParser(object):
                 else:
                     logging.debug(f"Not parsing system table - {table_name}")
         return tables_mapping
+
+    def parse_lvprop(self, lvprop_raw):
+        try:
+            parsed = LVPROP.parse(lvprop_raw)
+        except ConstructError:
+            return None
+        if not parsed.get("chunks"):
+            return None
+        table_names = [x.name for x in parsed.chunks[0].data.names]
+        # Chunk type 0 does not have a column name, so we cannot link it to a column
+        chunk_type_one = [x for x in parsed.chunks if x.chunk_type == 1]
+        reconstructed_column_data = {}
+        for chunk in chunk_type_one:
+            if not chunk.data.column_name:
+                logging.error("Error while parsing MSysObjects table chunk.")
+                continue
+            data_values = {}
+            for dv in chunk.data.data:
+                val = parse_type(dv.type, dv.actual_data, self.version)
+                try:
+                    name = table_names[dv.name_index]
+                    data_values[name] = val
+                except IndexError:
+                    logging.error("Error while parsing MSysObjects table chunk.")
+                    continue
+            reconstructed_column_data[chunk.data.column_name] = data_values
+        return reconstructed_column_data
 
     def parse_table(self, table_name):
         """
