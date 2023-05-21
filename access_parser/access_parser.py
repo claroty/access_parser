@@ -43,6 +43,18 @@ class AccessParser(object):
         self._table_defs, self._data_pages, self._all_pages = categorize_pages(self.db_data, self.page_size)
         self._tables_with_data = self._link_tables_to_data()
         self.catalog = self._parse_catalog()
+        self.extra_props = self.parse_msys_table()
+
+    def parse_msys_table(self):
+        """The MSysObjects contains extra metadata about tables and columns, like the Format of money field types """
+        msys_table = self.parse_table("MSysObjects")
+        if not msys_table:
+            return None
+        if not msys_table.get('Name') or not msys_table.get('LvProp'):
+            return []
+        table_to_lval_memo = {key: self.parse_lvprop(value) for key, value in zip(msys_table['Name'],
+                                                                                  msys_table['LvProp']) if value}
+        return table_to_lval_memo
 
     def _parse_file_header(self, db_data):
         """
@@ -103,6 +115,9 @@ class AccessParser(object):
         catalog = access_table.parse()
         tables_mapping = {}
         for i, table_name in enumerate(catalog['Name']):
+            # We need the MSysObjects table for metadata so exclude it from the system table filter.
+            if table_name == "MSysObjects":
+                tables_mapping[table_name] = catalog['Id'][i]
             # Visible user tables are type 1
             table_type = 1
             if catalog["Type"][i] == table_type:
@@ -160,7 +175,13 @@ class AccessParser(object):
             else:
                 logging.error(f"Could not find table {table_name} offset {table_offset}")
                 return
-        access_table = AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs)
+
+        # Try to get extra metadata for the table if it exists in the MSysObjects table
+        props = None
+        if table_name != "MSysObjects" and table_name in self.extra_props:
+            props = self.extra_props[table_name]
+
+        access_table = AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, props)
         return access_table.parse()
 
     def print_database(self):
@@ -178,8 +199,9 @@ class AccessParser(object):
 
 
 class AccessTable(object):
-    def __init__(self, table, version, page_size, data_pages, table_defs):
+    def __init__(self, table, version, page_size, data_pages, table_defs, props=None):
         self.version = version
+        self.props = props
         self.page_size = page_size
         self._data_pages = data_pages
         self._table_defs = table_defs
@@ -299,7 +321,7 @@ class AccessTable(object):
                 logging.error(f"Column offset is bigger than the length of the record {column.fixed_offset}")
                 return
             record = original_record[column.fixed_offset:]
-            parsed_type = parse_type(column.type, record, version=self.version)
+            parsed_type = parse_type(column.type, record, version=self.version, props=column.extra_props or None)
         self.parsed_table[column_name].append(parsed_type)
 
     def _parse_dynamic_length_records_metadata(self, reverse_record, original_record, null_table_length):
@@ -430,9 +452,10 @@ class AccessTable(object):
         col_names = table_header.column_names
         columns = table_header.column
 
-        # Add names to columns metadata so we can use only columns for parsing
+        # Add names to columns metadata, so we can use only columns for parsing
         for i, c in enumerate(columns):
             c.col_name_str = col_names[i].col_name_str
+            c.extra_props = None
 
         # column_index is more accurate(id is always incremented so it is wrong when a column is deleted).
         # Some tables like the catalog don't have index, so if indexes are 0 use id.
@@ -444,6 +467,12 @@ class AccessTable(object):
         if len(column_dict) != len(columns):
             # create a dict of id to column to make it easier to access
             column_dict = {x.column_id: x for x in columns}
+
+        # Add the extra properties relevant for the column
+        if self.props:
+            for i, col in column_dict.items():
+                if col.col_name_str in self.props:
+                    col.extra_props = self.props[col.col_name_str]
 
         if len(column_dict) != table_header.column_count:
             logging.debug(f"expected {table_header.column_count} columns got {len(column_dict)}")
