@@ -8,7 +8,7 @@ from tabulate import tabulate
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
     ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER
 from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file, numeric_to_string, \
-    TYPE_96_bit_17_BYTES
+    TYPE_96_bit_17_BYTES, TYPE_OLE
 
 # Page sizes
 PAGE_SIZE_V3 = 0x800
@@ -358,9 +358,15 @@ class AccessTable(object):
             # Parse types that require column data here, call parse_type on all other types
             if column.type == TYPE_MEMO:
                 try:
-                    parsed_type = self._parse_memo(relative_obj_data, column)
+                    parsed_type = self._parse_memo(relative_obj_data)
                 except ConstructError:
                     logging.warning("Failed to parse memo field. Using data as bytes")
+                    parsed_type = relative_obj_data
+            elif column.type == TYPE_OLE:
+                try:
+                    parsed_type = self._parse_memo(relative_obj_data, return_raw=True)
+                except ConstructError:
+                    logging.warning("Failed to parse OLE field. Using data as bytes")
                     parsed_type = relative_obj_data
             elif column.type == TYPE_96_bit_17_BYTES:
                 if len(relative_obj_data) != 17:
@@ -431,9 +437,10 @@ class AccessTable(object):
             data = data + table[parsed_header.header_end:]
         return data
 
-    def _parse_memo(self, relative_obj_data, column):
+    def _parse_memo(self, relative_obj_data, return_raw=False):
         logging.debug(f"Parsing memo field {relative_obj_data}")
         parsed_memo = MEMO.parse(relative_obj_data)
+        memo_type = TYPE_TEXT
         if parsed_memo.memo_length & 0x80000000:
             logging.debug("memo data inline")
             inline_memo_length = parsed_memo.memo_length & 0x3FFFFFFF
@@ -442,17 +449,25 @@ class AccessTable(object):
                 memo_data = relative_obj_data[parsed_memo.memo_end:]
             else:
                 memo_data = relative_obj_data[parsed_memo.memo_end:parsed_memo.memo_end + inline_memo_length]
-            memo_type = TYPE_TEXT
+
         elif parsed_memo.memo_length & 0x40000000:
             logging.debug("LVAL type 1")
             memo_data = self._get_overflow_record(parsed_memo.record_pointer)
-            memo_type = TYPE_TEXT
         else:
             logging.debug("LVAL type 2")
-            logging.warning("memo lval type 2 currently not supported")
-            memo_data = relative_obj_data
-            memo_type = column.type
+            rec_data = self._get_overflow_record(parsed_memo.record_pointer)
+            next_page = struct.unpack("I", rec_data[:4])[0]
+            # LVAL2 has data over multiple pages. The first 4 bytes of the page are the next record, then that data.
+            # Concat the data until we get a 0 next_page.
+            memo_data = b""
+            while next_page:
+                memo_data += rec_data[4:]
+                rec_data = self._get_overflow_record(next_page)
+                next_page = struct.unpack("I", rec_data[:4])[0]
+            memo_data += rec_data[4:]
         if memo_data:
+            if return_raw:
+                return memo_data
             parsed_type = parse_type(memo_type, memo_data, len(memo_data), version=self.version)
             return parsed_type
 
@@ -481,7 +496,7 @@ class AccessTable(object):
             record = record_page[start:]
         else:
             end = parsed_data.record_offsets[record_offset - 1]
-            if end & 0x8000:
+            if end & 0x8000 and (end & 0xff != 0):
                 end = end & 0xfff
             record = record_page[start: end]
         return record
