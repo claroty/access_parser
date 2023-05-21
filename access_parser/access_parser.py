@@ -194,7 +194,7 @@ class AccessParser(object):
             if not table:
                 continue
             print(f'TABLE NAME: {table_name}\r\n')
-            print(tabulate(table, headers="keys"))
+            print(tabulate(table, headers="keys", disable_numparse=True))
             print('\r\n\r\n\r\n\r\n')
 
 
