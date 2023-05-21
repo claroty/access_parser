@@ -145,7 +145,7 @@ class AccessParser(object):
                 continue
             data_values = {}
             for dv in chunk.data.data:
-                val = parse_type(dv.type, dv.actual_data, self.version)
+                val = parse_type(dv.type, dv.actual_data, version=self.version)
                 try:
                     name = table_names[dv.name_index]
                     data_values[name] = val
