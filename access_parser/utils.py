@@ -59,6 +59,17 @@ def numeric_to_string(bytes_num, scale=6):
     return numeric_string
 
 
+def get_decoded_text(bytes_data):
+    try:
+        decoded = bytes_data.decode('utf-8')
+    except UnicodeDecodeError:
+        try:
+            decoded = bytes_data.decode('latin1')
+        except UnicodeDecodeError:
+            decoded = bytes_data.decode('utf-8', errors='ignore')
+    return decoded
+
+
 def parse_type(data_type, buffer, length=None, version=3):
     parsed = ""
     # Bool or int8
@@ -91,11 +102,11 @@ def parse_type(data_type, buffer, length=None, version=3):
             # Looks like if BOM is present text is already decoded
             if buffer.startswith(b"\xfe\xff") or buffer.startswith(b"\xff\xfe"):
                 buff = buffer[2:]
-                parsed = buff.decode("utf-8", errors='ignore')
+                parsed = get_decoded_text(buff)
             else:
                 parsed = buffer.decode("utf-16", errors='ignore')
         else:
-            parsed = buffer.decode('utf-8', errors='ignore')
+            parsed = get_decoded_text(buffer)
     else:
         logging.debug(f"parse_type - unsupported data type: {data_type}")
     return parsed
