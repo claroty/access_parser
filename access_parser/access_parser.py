@@ -308,20 +308,27 @@ class AccessTable(object):
         :param null_table: null table of the row
         """
         column_name = column.col_name_str
+        # The null table indicates null values in the row.
+        # The only exception is BOOL fields which are encoded in the null table
+        has_value = True
+        if column.column_id > len(null_table):
+            logging.warning("Invalid null table. Bool values may be wrong, deleted values may be shown in the db.")
+            if column.type == TYPE_BOOLEAN:
+                has_value = None
+        else:
+            has_value = null_table[column.column_id]
         # Boolean fields are encoded in the null table
         if column.type == TYPE_BOOLEAN:
-            if column.column_id > len(null_table):
-                logging.error(f"Failed to parse bool field, Column not found in null_table column: {column_name} ,"
-                              f" column id: {column.column_id} , null_table: {null_table}")
-                return
-
-            parsed_type = null_table[column.column_id]
+            parsed_type = has_value
         else:
             if column.fixed_offset > len(original_record):
                 logging.error(f"Column offset is bigger than the length of the record {column.fixed_offset}")
                 return
             record = original_record[column.fixed_offset:]
             parsed_type = parse_type(column.type, record, version=self.version, props=column.extra_props or None)
+            if not has_value:
+                self.parsed_table[column_name].append(None)
+                return
         self.parsed_table[column_name].append(parsed_type)
 
     def _parse_dynamic_length_records_metadata(self, reverse_record, original_record, null_table_length):
