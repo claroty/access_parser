@@ -33,8 +33,7 @@ db.print_database()
 ```
 
 ### Known Issues
-* OLE fields are currently not supported
-* Only a subset of memo fields are parsed
+* 
 
 This library was tested on a limited subset of database files. Due to the differences between database versions and the complexity of the parsing we expect to find more parsing edge-cases.
 
