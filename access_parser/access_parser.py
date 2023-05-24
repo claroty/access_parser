@@ -298,7 +298,7 @@ class AccessTable(object):
             if not metadata:
                 return
             if metadata.variable_length_field_offsets:
-                self._parse_dynamic_length_data(original_record, metadata, relative_records_column_map)
+                self._parse_dynamic_length_data(original_record, metadata, relative_records_column_map, null_table)
 
     def _parse_fixed_length_data(self, original_record, column, null_table):
         """
@@ -383,18 +383,28 @@ class AccessTable(object):
         return relative_record_metadata
 
     def _parse_dynamic_length_data(self, original_record, relative_record_metadata,
-                                   relative_records_column_map):
+                                   relative_records_column_map, null_table):
         """
         Parse dynamic (non fixed length) records from row
         :param original_record: full unmodified record
         :param relative_record_metadata: parsed record metadata
         :param relative_records_column_map: relative records colum mapping {index: column}
+        :param null_table: list indicating which columns have null value
         """
         relative_offsets = relative_record_metadata.variable_length_field_offsets
         jump_table_addition = 0
         for i, column_index in enumerate(relative_records_column_map):
             column = relative_records_column_map[column_index]
             col_name = column.col_name_str
+            has_value = True
+            if column.column_id > len(null_table):
+                logging.warning("Invalid null table. null values may be shown in the db.")
+            else:
+                has_value = null_table[column.column_id]
+            if not has_value:
+                self.parsed_table[col_name].append(None)
+                continue
+
             if self.version == 3:
                 if i in relative_record_metadata.variable_length_jump_table:
                     jump_table_addition += 0x100
