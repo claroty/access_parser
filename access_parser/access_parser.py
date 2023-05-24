@@ -6,9 +6,9 @@ from construct import ConstructError
 from tabulate import tabulate
 
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
-    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER
+    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER, LVPROP
 from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file, numeric_to_string, \
-    TYPE_96_bit_17_BYTES
+    TYPE_96_bit_17_BYTES, TYPE_OLE
 
 # Page sizes
 PAGE_SIZE_V3 = 0x800
@@ -43,6 +43,18 @@ class AccessParser(object):
         self._table_defs, self._data_pages, self._all_pages = categorize_pages(self.db_data, self.page_size)
         self._tables_with_data = self._link_tables_to_data()
         self.catalog = self._parse_catalog()
+        self.extra_props = self.parse_msys_table()
+
+    def parse_msys_table(self):
+        """The MSysObjects contains extra metadata about tables and columns, like the Format of money field types """
+        msys_table = self.parse_table("MSysObjects")
+        if not msys_table:
+            return None
+        if not msys_table.get('Name') or not msys_table.get('LvProp'):
+            return []
+        table_to_lval_memo = {key: self.parse_lvprop(value) for key, value in zip(msys_table['Name'],
+                                                                                  msys_table['LvProp']) if value}
+        return table_to_lval_memo
 
     def _parse_file_header(self, db_data):
         """
@@ -103,6 +115,9 @@ class AccessParser(object):
         catalog = access_table.parse()
         tables_mapping = {}
         for i, table_name in enumerate(catalog['Name']):
+            # We need the MSysObjects table for metadata so exclude it from the system table filter.
+            if table_name == "MSysObjects":
+                tables_mapping[table_name] = catalog['Id'][i]
             # Visible user tables are type 1
             table_type = 1
             if catalog["Type"][i] == table_type:
@@ -112,6 +127,33 @@ class AccessParser(object):
                 else:
                     logging.debug(f"Not parsing system table - {table_name}")
         return tables_mapping
+
+    def parse_lvprop(self, lvprop_raw):
+        try:
+            parsed = LVPROP.parse(lvprop_raw)
+        except ConstructError:
+            return None
+        if not parsed.get("chunks"):
+            return None
+        table_names = [x.name for x in parsed.chunks[0].data.names]
+        # Chunk type 0 does not have a column name, so we cannot link it to a column
+        chunk_type_one = [x for x in parsed.chunks if x.chunk_type == 1]
+        reconstructed_column_data = {}
+        for chunk in chunk_type_one:
+            if not chunk.data.column_name:
+                logging.error("Error while parsing MSysObjects table chunk.")
+                continue
+            data_values = {}
+            for dv in chunk.data.data:
+                val = parse_type(dv.type, dv.actual_data, version=self.version)
+                try:
+                    name = table_names[dv.name_index]
+                    data_values[name] = val
+                except IndexError:
+                    logging.error("Error while parsing MSysObjects table chunk.")
+                    continue
+            reconstructed_column_data[chunk.data.column_name] = data_values
+        return reconstructed_column_data
 
     def parse_table(self, table_name):
         """
@@ -133,7 +175,13 @@ class AccessParser(object):
             else:
                 logging.error(f"Could not find table {table_name} offset {table_offset}")
                 return
-        access_table = AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs)
+
+        # Try to get extra metadata for the table if it exists in the MSysObjects table
+        props = None
+        if table_name != "MSysObjects" and table_name in self.extra_props:
+            props = self.extra_props[table_name]
+
+        access_table = AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, props)
         return access_table.parse()
 
     def print_database(self):
@@ -146,13 +194,14 @@ class AccessParser(object):
             if not table:
                 continue
             print(f'TABLE NAME: {table_name}\r\n')
-            print(tabulate(table, headers="keys"))
+            print(tabulate(table, headers="keys", disable_numparse=True))
             print('\r\n\r\n\r\n\r\n')
 
 
 class AccessTable(object):
-    def __init__(self, table, version, page_size, data_pages, table_defs):
+    def __init__(self, table, version, page_size, data_pages, table_defs, props=None):
         self.version = version
+        self.props = props
         self.page_size = page_size
         self._data_pages = data_pages
         self._table_defs = table_defs
@@ -272,7 +321,7 @@ class AccessTable(object):
                 logging.error(f"Column offset is bigger than the length of the record {column.fixed_offset}")
                 return
             record = original_record[column.fixed_offset:]
-            parsed_type = parse_type(column.type, record, version=self.version)
+            parsed_type = parse_type(column.type, record, version=self.version, props=column.extra_props or None)
         self.parsed_table[column_name].append(parsed_type)
 
     def _parse_dynamic_length_records_metadata(self, reverse_record, original_record, null_table_length):
@@ -358,9 +407,15 @@ class AccessTable(object):
             # Parse types that require column data here, call parse_type on all other types
             if column.type == TYPE_MEMO:
                 try:
-                    parsed_type = self._parse_memo(relative_obj_data, column)
+                    parsed_type = self._parse_memo(relative_obj_data)
                 except ConstructError:
                     logging.warning("Failed to parse memo field. Using data as bytes")
+                    parsed_type = relative_obj_data
+            elif column.type == TYPE_OLE:
+                try:
+                    parsed_type = self._parse_memo(relative_obj_data, return_raw=True)
+                except ConstructError:
+                    logging.warning("Failed to parse OLE field. Using data as bytes")
                     parsed_type = relative_obj_data
             elif column.type == TYPE_96_bit_17_BYTES:
                 if len(relative_obj_data) != 17:
@@ -397,9 +452,10 @@ class AccessTable(object):
         col_names = table_header.column_names
         columns = table_header.column
 
-        # Add names to columns metadata so we can use only columns for parsing
+        # Add names to columns metadata, so we can use only columns for parsing
         for i, c in enumerate(columns):
             c.col_name_str = col_names[i].col_name_str
+            c.extra_props = None
 
         # column_index is more accurate(id is always incremented so it is wrong when a column is deleted).
         # Some tables like the catalog don't have index, so if indexes are 0 use id.
@@ -411,6 +467,12 @@ class AccessTable(object):
         if len(column_dict) != len(columns):
             # create a dict of id to column to make it easier to access
             column_dict = {x.column_id: x for x in columns}
+
+        # Add the extra properties relevant for the column
+        if self.props:
+            for i, col in column_dict.items():
+                if col.col_name_str in self.props:
+                    col.extra_props = self.props[col.col_name_str]
 
         if len(column_dict) != table_header.column_count:
             logging.debug(f"expected {table_header.column_count} columns got {len(column_dict)}")
@@ -431,9 +493,10 @@ class AccessTable(object):
             data = data + table[parsed_header.header_end:]
         return data
 
-    def _parse_memo(self, relative_obj_data, column):
+    def _parse_memo(self, relative_obj_data, return_raw=False):
         logging.debug(f"Parsing memo field {relative_obj_data}")
         parsed_memo = MEMO.parse(relative_obj_data)
+        memo_type = TYPE_TEXT
         if parsed_memo.memo_length & 0x80000000:
             logging.debug("memo data inline")
             inline_memo_length = parsed_memo.memo_length & 0x3FFFFFFF
@@ -442,17 +505,25 @@ class AccessTable(object):
                 memo_data = relative_obj_data[parsed_memo.memo_end:]
             else:
                 memo_data = relative_obj_data[parsed_memo.memo_end:parsed_memo.memo_end + inline_memo_length]
-            memo_type = TYPE_TEXT
+
         elif parsed_memo.memo_length & 0x40000000:
             logging.debug("LVAL type 1")
             memo_data = self._get_overflow_record(parsed_memo.record_pointer)
-            memo_type = TYPE_TEXT
         else:
             logging.debug("LVAL type 2")
-            logging.warning("memo lval type 2 currently not supported")
-            memo_data = relative_obj_data
-            memo_type = column.type
+            rec_data = self._get_overflow_record(parsed_memo.record_pointer)
+            next_page = struct.unpack("I", rec_data[:4])[0]
+            # LVAL2 has data over multiple pages. The first 4 bytes of the page are the next record, then that data.
+            # Concat the data until we get a 0 next_page.
+            memo_data = b""
+            while next_page:
+                memo_data += rec_data[4:]
+                rec_data = self._get_overflow_record(next_page)
+                next_page = struct.unpack("I", rec_data[:4])[0]
+            memo_data += rec_data[4:]
         if memo_data:
+            if return_raw:
+                return memo_data
             parsed_type = parse_type(memo_type, memo_data, len(memo_data), version=self.version)
             return parsed_type
 
@@ -481,7 +552,7 @@ class AccessTable(object):
             record = record_page[start:]
         else:
             end = parsed_data.record_offsets[record_offset - 1]
-            if end & 0x8000:
+            if end & 0x8000 and (end & 0xff != 0):
                 end = end & 0xfff
             record = record_page[start: end]
         return record

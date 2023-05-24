@@ -11,7 +11,7 @@ def print_tables(db_path, only_catalog=False, specific_table=None):
     elif specific_table:
         table = db.parse_table(specific_table)
         print(f'TABLE NAME: {specific_table}\r\n')
-        print(tabulate(table, headers="keys"))
+        print(tabulate(table, headers="keys", disable_numparse=True))
         print("\n\n\n\n")
     else:
         db.print_database()

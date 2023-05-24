@@ -63,6 +63,47 @@ TDEF_HEADER = Struct(
     "next_page_ptr" / Int32ul,
     "header_end" / Tell)
 
+LVPROP_CHUNK_NAMES_INT = Struct(
+    "name_length" / Int16ul,
+    "name" / PaddedString(this.name_length, "utf16"),
+)
+LVPROP_CHUNK_NAMES = Struct(
+    "names" / GreedyRange(LVPROP_CHUNK_NAMES_INT),
+    # "leftover" / GreedyBytes
+)
+LVPROP_DATA = Struct(
+    "data_length" / Int16ul,
+    "ddl_flag" / Int8ul,
+    "type" / Int8ul,
+    "name_index" / Int16ul,
+    "only_data_length" / Int16ul,
+    "actual_data" / Bytes(this.only_data_length)
+)
+LVPROP_VALUE = Struct(
+    "val_length" / Int32ul,
+    "name_length" / Int16ul,
+    "column_name" / PaddedString(this.name_length, "utf16"),
+    "data" / GreedyRange(LVPROP_DATA),
+    "left" / GreedyBytes
+)
+
+LVPROP_CHUNK = Struct(
+    "length" / Int32ul,
+    "chunk_type" / Int16ul,
+
+    "data" / Prefixed(Computed(this.length - 6), Switch(this.chunk_type, {
+        # 128: GreedyRange(LVPROP_CHUNK_NAMES)
+        128: LVPROP_CHUNK_NAMES,
+        0:LVPROP_VALUE,
+        1: LVPROP_VALUE
+    }, default=Bytes(this.length - 4)))
+)
+LVPROP = Struct(
+    #'KKD\0' in Jet3 and 'MR2\0' in Jet 4.
+    "magic" / Bytes(4),
+    "chunks" / GreedyRange(LVPROP_CHUNK),
+    "leftover" / GreedyBytes
+)
 
 def parse_table_head(buffer, version=3):
     REAL_INDEX2 = Struct(
