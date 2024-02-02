@@ -456,12 +456,20 @@ class AccessTable(object):
             if table_header.TDEF_header.next_page_ptr:
                 merged_data = merged_data + self._merge_table_data(table_header.TDEF_header.next_page_ptr)
 
-            parsed_data = parse_table_data(merged_data, table_header.real_index_count,
-                                           table_header.column_count, version=self.version)
+            parsed_data = parse_table_data(
+                merged_data,
+                table_header.index_count,
+                table_header.real_index_count,
+                table_header.column_count,
+                version=self.version,
+            )
 
             # Merge Data back to table_header
             table_header['column'] = parsed_data['column']
             table_header['column_names'] = parsed_data['column_names']
+            table_header['real_index_2'] = parsed_data['real_index_2']
+            table_header["all_indexes"] = parsed_data["all_indexes"]
+            table_header["index_names"] = parsed_data["index_names"]
 
         except ConstructError:
             logging.error(f"Failed to parse table header {self.table.value}")

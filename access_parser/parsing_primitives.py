@@ -106,26 +106,6 @@ LVPROP = Struct(
 )
 
 def parse_table_head(buffer, version=3):
-    REAL_INDEX2 = Struct(
-        "unknown_b1" / If(lambda x: version > 3, Int32ul),
-        "unk_struct" / Array(10, Struct("col_id" / Int16ul, "idx_flags" / Int8ul)),
-        "runk" / Int32ul,
-        "first_index_page" / Int32ul,
-        "flags" / version_specific(version, Int8ul, Int16ul),
-        "unknown_b3" / If(lambda x: version > 3, Int32ul),
-        "unknown_b4" / If(lambda x: version > 3, Int32ul))
-
-    ALL_INDEXES = Struct(
-        "unknown_c1" / If(lambda x: version > 3, Int32ul),
-        "idx_num" / Int32ul,
-        "idx_col_num" / Int32ul,
-        "unkc2" / Int8ul,
-        "unkc3" / Int32ul,
-        "unkc4" / Int32ul,
-        "unkc5" / Int16ul,
-        "idx_type" / Int8ul,
-        "unknown_c6" / If(lambda x: version > 3, Int32ul))
-
     return Struct(
         "TDEF_header" / TDEF_HEADER,
         # Table
@@ -150,7 +130,7 @@ def parse_table_head(buffer, version=3):
         "tdef_header_end" / Tell).parse(buffer)
 
 
-def parse_table_data(buffer, real_index_count, column_count, version=3):
+def parse_table_data(buffer, index_count, real_index_count, column_count, version=3):
     REAL_INDEX = Struct(
         "unk1" / Int32ul,
         "index_row_count" / Int32ul,
@@ -220,16 +200,41 @@ def parse_table_data(buffer, real_index_count, column_count, version=3):
                                           PaddedString(lambda x: x.col_name_len, encoding="utf8"),
                                           PaddedString(lambda x: x.col_name_len, encoding="utf16")),
     )
+
+    REAL_INDEX2 = Struct(
+        "unknown_b1" / If(lambda x: version > 3, Int32ul),
+        "unk_struct" / Array(10, Struct("col_id" / Int16ul, "idx_flags" / Int8ul)),
+        "runk" / Int32ul,
+        "first_index_page" / Int32ul,
+        "flags" / Int8ul,
+        "unknown_b3" / If(lambda x: version > 3, Padding(9)))
+
+    ALL_INDEXES = Struct(
+        "unknown_c1" / If(lambda x: version > 3, Int32ul),
+        "idx_num" / Int32ul,
+        "idx_col_num" / Int32ul,
+        "rel_tbl_type" / Int8ul,
+        "rel_idx_num" / Int32sl,
+        "rel_tbl_page" / Int32ul,
+        "cascade_ups" / Int8ul,
+        "cascade_dels" / Int8ul,
+        "idx_type" / Int8ul,
+        "unknown_c2" / If(lambda x: version > 3, Int32ul))
+
+    INDEX_NAMES = Struct(
+        "idx_name_len" / version_specific(version, Int8ul, Int16ul),
+        "idx_name_str" / version_specific(version,
+                                          PaddedString(lambda x: x.idx_name_len, encoding="utf8"),
+                                          PaddedString(lambda x: x.idx_name_len, encoding="utf16")),
+    )
+
     return Struct(
         "real_index" / Array(real_index_count, REAL_INDEX),
         "column" / Array(column_count, COLUMN),
-        "column_names" / Array(column_count, COLUMN_NAMES)).parse(buffer)
-
-    # These fields cause errors when parsing some DB files. We currently don't use any of the values from
-    # then anyway
-    #
-    # Array(lambda x: x.real_index_count, REAL_INDEX2),
-    # Array(lambda x: x.index_count, ALL_INDEXES))
+        "column_names" / Array(column_count, COLUMN_NAMES),
+        "real_index_2" / Array(real_index_count, REAL_INDEX2),
+        "all_indexes" / Array(index_count, ALL_INDEXES),
+        "index_names" /  Array(index_count, INDEX_NAMES)).parse(buffer)
 
 
 def parse_data_page_header(buffer, version=3):
