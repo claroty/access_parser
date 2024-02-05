@@ -128,6 +128,29 @@ class AccessParser(object):
                     logging.debug(f"Not parsing system table - {table_name}")
         return tables_mapping
 
+    def get_table(self, table_name):
+        table_offset = self.catalog.get(table_name)
+        if not table_offset:
+            logging.error(f"Could not find table {table_name} in DataBase")
+            return
+        table_offset = table_offset * self.page_size
+        table = self._tables_with_data.get(table_offset)
+        if not table:
+            table_def = self._table_defs.get(table_offset)
+            if table_def:
+                table = TableObj(offset=table_offset, val=table_def)
+                logging.info(f"Table {table_name} has no data")
+            else:
+                logging.error(f"Could not find table {table_name} offset {table_offset}")
+                return
+
+        # Try to get extra metadata for the table if it exists in the MSysObjects table
+        props = None
+        if table_name != "MSysObjects" and table_name in self.extra_props:
+            props = self.extra_props[table_name]
+
+        return AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, props)
+
     def parse_lvprop(self, lvprop_raw):
         try:
             parsed = LVPROP.parse(lvprop_raw)
@@ -161,28 +184,7 @@ class AccessParser(object):
         tables names are in self.catalog
         :return defaultdict(list) with the parsed table -- table[column][row_index]
         """
-        table_offset = self.catalog.get(table_name)
-        if not table_offset:
-            logging.error(f"Could not find table {table_name} in DataBase")
-            return
-        table_offset = table_offset * self.page_size
-        table = self._tables_with_data.get(table_offset)
-        if not table:
-            table_def = self._table_defs.get(table_offset)
-            if table_def:
-                table = TableObj(offset=table_offset, val=table_def)
-                logging.info(f"Table {table_name} has no data")
-            else:
-                logging.error(f"Could not find table {table_name} offset {table_offset}")
-                return
-
-        # Try to get extra metadata for the table if it exists in the MSysObjects table
-        props = None
-        if table_name != "MSysObjects" and table_name in self.extra_props:
-            props = self.extra_props[table_name]
-
-        access_table = AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, props)
-        return access_table.parse()
+        return self.get_table(table_name).parse()
 
     def print_database(self):
         """
@@ -207,11 +209,11 @@ class AccessTable(object):
         self._table_defs = table_defs
         self.table = table
         self.parsed_table = defaultdict(list)
-        self.columns, self.table_header = self._get_table_columns()
+        self.columns, self.primary_keys, self.table_header = self._get_table_columns()
 
     def create_empty_table(self):
         parsed_table = defaultdict(list)
-        columns, parsed_header = self._get_table_columns()
+        columns, *_ = self._get_table_columns()
         for i, column in columns.items():
             parsed_table[column.col_name_str] = ""
         return parsed_table
@@ -456,12 +458,20 @@ class AccessTable(object):
             if table_header.TDEF_header.next_page_ptr:
                 merged_data = merged_data + self._merge_table_data(table_header.TDEF_header.next_page_ptr)
 
-            parsed_data = parse_table_data(merged_data, table_header.real_index_count,
-                                           table_header.column_count, version=self.version)
+            parsed_data = parse_table_data(
+                merged_data,
+                table_header.index_count,
+                table_header.real_index_count,
+                table_header.column_count,
+                version=self.version,
+            )
 
             # Merge Data back to table_header
             table_header['column'] = parsed_data['column']
             table_header['column_names'] = parsed_data['column_names']
+            table_header['real_index_2'] = parsed_data['real_index_2']
+            table_header["all_indexes"] = parsed_data["all_indexes"]
+            table_header["index_names"] = parsed_data["index_names"]
 
         except ConstructError:
             logging.error(f"Failed to parse table header {self.table.value}")
@@ -491,9 +501,16 @@ class AccessTable(object):
                 if col.col_name_str in self.props:
                     col.extra_props = self.props[col.col_name_str]
 
+        primary_keys = [
+            column_dict[col.col_id].col_name_str
+            for idx in table_header.all_indexes
+            for col in table_header.real_index_2[idx.idx_col_num].unk_struct
+            if idx.idx_type == 1 and col.col_id ^ 0xFFFF
+        ]
+
         if len(column_dict) != table_header.column_count:
             logging.debug(f"expected {table_header.column_count} columns got {len(column_dict)}")
-        return column_dict, table_header
+        return column_dict, primary_keys, table_header
 
     def _merge_table_data(self, first_page):
         """
