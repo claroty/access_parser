@@ -184,6 +184,10 @@ def parse_type(data_type, buffer, length=None, version=3, props=None):
                 parsed = buffer.decode("utf-16", errors='ignore')
         else:
             parsed = get_decoded_text(buffer)
+
+        if "\x00" in parsed:
+            logging.debug(f"Parsed string contains NUL (0x00) characters: {parsed}")
+            parsed = parsed.replace("\x00", "")
     else:
         logging.debug(f"parse_type - unsupported data type: {data_type}")
     return parsed
