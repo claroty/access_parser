@@ -25,8 +25,7 @@ NEW_VERSIONS = [VERSION_4, VERSION_5, VERSION_2010]
 
 SYSTEM_TABLE_FLAGS = [-0x80000000, -0x00000002, 0x80000000, 0x00000002]
 
-LOG_LEVEL = logging.WARNING
-logging.basicConfig(format='%(levelname)s:%(message)s', level=LOG_LEVEL)
+LOGGER = logging.getLogger("access_parser")
 
 
 class TableObj(object):
@@ -78,10 +77,10 @@ class AccessParser(object):
 
         else:
             if not version == VERSION_3:
-                logging.error(f"Unknown database version {version} Trying to parse database as version 3")
+                LOGGER.error(f"Unknown database version {version} Trying to parse database as version 3")
             self.version = ALL_VERSIONS[VERSION_3]
             self.page_size = PAGE_SIZE_V3
-        logging.info(f"DataBase version {version}")
+        LOGGER.info(f"DataBase version {version}")
 
     def _link_tables_to_data(self):
         """
@@ -95,7 +94,7 @@ class AccessParser(object):
             try:
                 parsed_dp = parse_data_page_header(data, version=self.version)
             except ConstructError:
-                logging.error(f"Failed to parse data page {data}")
+                LOGGER.error(f"Failed to parse data page {data}")
                 continue
             page_offset = parsed_dp.owner * self.page_size
             if page_offset in self._table_defs:
@@ -125,13 +124,13 @@ class AccessParser(object):
                 if not catalog["Flags"][i] in SYSTEM_TABLE_FLAGS:
                     tables_mapping[table_name] = catalog['Id'][i]
                 else:
-                    logging.debug(f"Not parsing system table - {table_name}")
+                    LOGGER.debug(f"Not parsing system table - {table_name}")
         return tables_mapping
 
     def get_table(self, table_name):
         table_offset = self.catalog.get(table_name)
         if not table_offset:
-            logging.error(f"Could not find table {table_name} in DataBase")
+            LOGGER.error(f"Could not find table {table_name} in DataBase")
             return
         table_offset = table_offset * self.page_size
         table = self._tables_with_data.get(table_offset)
@@ -139,9 +138,9 @@ class AccessParser(object):
             table_def = self._table_defs.get(table_offset)
             if table_def:
                 table = TableObj(offset=table_offset, val=table_def)
-                logging.info(f"Table {table_name} has no data")
+                LOGGER.info(f"Table {table_name} has no data")
             else:
-                logging.error(f"Could not find table {table_name} offset {table_offset}")
+                LOGGER.error(f"Could not find table {table_name} offset {table_offset}")
                 return
 
         # Try to get extra metadata for the table if it exists in the MSysObjects table
@@ -164,7 +163,7 @@ class AccessParser(object):
         reconstructed_column_data = {}
         for chunk in chunk_type_one:
             if not chunk.data.column_name:
-                logging.error("Error while parsing MSysObjects table chunk.")
+                LOGGER.error("Error while parsing MSysObjects table chunk.")
                 continue
             data_values = {}
             for dv in chunk.data.data:
@@ -173,7 +172,7 @@ class AccessParser(object):
                     name = table_names[dv.name_index]
                     data_values[name] = val
                 except IndexError:
-                    logging.error("Error while parsing MSysObjects table chunk.")
+                    LOGGER.error("Error while parsing MSysObjects table chunk.")
                     continue
             reconstructed_column_data[chunk.data.column_name] = data_values
         return reconstructed_column_data
@@ -274,7 +273,7 @@ class AccessTable(object):
             # Turn bitmap to a list of True False values
             null_table = [((null_table[i // 8]) & (1 << (i % 8))) != 0 for i in range(len(null_table) * 8)]
         else:
-            logging.error(f"Failed to parse null table column count {self.table_header.column_count}")
+            LOGGER.error(f"Failed to parse null table column count {self.table_header.column_count}")
             return
         if self.version > 3:
             field_count = struct.unpack_from("h", record)[0]
@@ -314,7 +313,7 @@ class AccessTable(object):
         # The only exception is BOOL fields which are encoded in the null table
         has_value = True
         if column.column_id > len(null_table):
-            logging.warning("Invalid null table. Bool values may be wrong, deleted values may be shown in the db.")
+            LOGGER.warning("Invalid null table. Bool values may be wrong, deleted values may be shown in the db.")
             if column.type == TYPE_BOOLEAN:
                 has_value = None
         else:
@@ -324,7 +323,7 @@ class AccessTable(object):
             parsed_type = has_value
         else:
             if column.fixed_offset > len(original_record):
-                logging.error(f"Column offset is bigger than the length of the record {column.fixed_offset}")
+                LOGGER.error(f"Column offset is bigger than the length of the record {column.fixed_offset}")
                 return
             record = original_record[column.fixed_offset:]
             parsed_type = parse_type(column.type, record, version=self.version, props=column.extra_props or None)
@@ -358,7 +357,7 @@ class AccessTable(object):
             relative_record_metadata.relative_metadata_end = relative_record_metadata.relative_metadata_end + null_table_length
         except ConstructError:
             relative_record_metadata = None
-            logging.error("Failed parsing record")
+            LOGGER.error("Failed parsing record")
 
         if relative_record_metadata and \
                 relative_record_metadata.variable_length_field_count != self.table_header.variable_columns:
@@ -374,11 +373,11 @@ class AccessTable(object):
                                                                                      variable_length_jump_table_cnt,
                                                                                      self.version)
                 except ConstructError:
-                    logging.error(f"Failed to parse record metadata: {original_record}")
+                    LOGGER.error(f"Failed to parse record metadata: {original_record}")
                 relative_record_metadata.relative_metadata_end = relative_record_metadata.relative_metadata_end + \
                                                                  metadata_start
             else:
-                logging.warning(
+                LOGGER.warning(
                     f"Record did not parse correctly. Number of columns: {self.table_header.variable_columns}"
                     f" number of parsed columns: {relative_record_metadata.variable_length_field_count}")
                 return None
@@ -400,7 +399,7 @@ class AccessTable(object):
             col_name = column.col_name_str
             has_value = True
             if column.column_id > len(null_table):
-                logging.warning("Invalid null table. null values may be shown in the db.")
+                LOGGER.warning("Invalid null table. null values may be shown in the db.")
             else:
                 has_value = null_table[column.column_id]
             if not has_value:
@@ -428,17 +427,17 @@ class AccessTable(object):
                 try:
                     parsed_type = self._parse_memo(relative_obj_data)
                 except ConstructError:
-                    logging.warning("Failed to parse memo field. Using data as bytes")
+                    LOGGER.warning("Failed to parse memo field. Using data as bytes")
                     parsed_type = relative_obj_data
             elif column.type == TYPE_OLE:
                 try:
                     parsed_type = self._parse_memo(relative_obj_data, return_raw=True)
                 except ConstructError:
-                    logging.warning("Failed to parse OLE field. Using data as bytes")
+                    LOGGER.warning("Failed to parse OLE field. Using data as bytes")
                     parsed_type = relative_obj_data
             elif column.type == TYPE_96_bit_17_BYTES:
                 if len(relative_obj_data) != 17:
-                    logging.warning(f"Relative numeric field has invalid length {len(relative_obj_data)}, expected 17")
+                    LOGGER.warning(f"Relative numeric field has invalid length {len(relative_obj_data)}, expected 17")
                     parsed_type = relative_obj_data
                 else:
                     # Get scale or None
@@ -474,7 +473,7 @@ class AccessTable(object):
             table_header["index_names"] = parsed_data["index_names"]
 
         except ConstructError:
-            logging.error(f"Failed to parse table header {self.table.value}")
+            LOGGER.error(f"Failed to parse table header {self.table.value}")
             return
         col_names = table_header.column_names
         columns = table_header.column
@@ -509,7 +508,7 @@ class AccessTable(object):
         ]
 
         if len(column_dict) != table_header.column_count:
-            logging.debug(f"expected {table_header.column_count} columns got {len(column_dict)}")
+            LOGGER.debug(f"expected {table_header.column_count} columns got {len(column_dict)}")
         return column_dict, primary_keys, table_header
 
     def _merge_table_data(self, first_page):
@@ -528,23 +527,23 @@ class AccessTable(object):
         return data
 
     def _parse_memo(self, relative_obj_data, return_raw=False):
-        logging.debug(f"Parsing memo field {relative_obj_data}")
+        LOGGER.debug(f"Parsing memo field {relative_obj_data}")
         parsed_memo = MEMO.parse(relative_obj_data)
         memo_type = TYPE_TEXT
         if parsed_memo.memo_length & 0x80000000:
-            logging.debug("memo data inline")
+            LOGGER.debug("memo data inline")
             inline_memo_length = parsed_memo.memo_length & 0x3FFFFFFF
             if len(relative_obj_data) < parsed_memo.memo_end + inline_memo_length:
-                logging.warning("Inline memo field has invalid length using full data")
+                LOGGER.warning("Inline memo field has invalid length using full data")
                 memo_data = relative_obj_data[parsed_memo.memo_end:]
             else:
                 memo_data = relative_obj_data[parsed_memo.memo_end:parsed_memo.memo_end + inline_memo_length]
 
         elif parsed_memo.memo_length & 0x40000000:
-            logging.debug("LVAL type 1")
+            LOGGER.debug("LVAL type 1")
             memo_data = self._get_overflow_record(parsed_memo.record_pointer)
         else:
-            logging.debug("LVAL type 2")
+            LOGGER.debug("LVAL type 2")
             rec_data = self._get_overflow_record(parsed_memo.record_pointer)
             next_page = struct.unpack("I", rec_data[:4])[0]
             # LVAL2 has data over multiple pages. The first 4 bytes of the page are the next record, then that data.
@@ -571,17 +570,17 @@ class AccessTable(object):
         page_num = record_pointer >> 8
         record_page = self._data_pages.get(page_num * self.page_size)
         if not record_page:
-            logging.warning(f"Could not find overflow record data page overflow pointer: {record_pointer}")
+            LOGGER.warning(f"Could not find overflow record data page overflow pointer: {record_pointer}")
             return
         parsed_data = parse_data_page_header(record_page, version=self.version)
         if record_offset > len(parsed_data.record_offsets):
-            logging.warning("Failed parsing overflow record offset")
+            LOGGER.warning("Failed parsing overflow record offset")
             return
         start = parsed_data.record_offsets[record_offset]
         if start & 0x8000:
             start = start & 0xfff
         else:
-            logging.debug(f"Overflow record flag is not present {start}")
+            LOGGER.debug(f"Overflow record flag is not present {start}")
         if record_offset == 0:
             record = record_page[start:]
         else:
@@ -590,3 +589,7 @@ class AccessTable(object):
                 end = end & 0xfff
             record = record_page[start: end]
         return record
+
+
+if __name__ == '__main__':
+    logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.WARNING)
