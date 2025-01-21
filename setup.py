@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setuptools.setup(
     name="access_parser",
-    version="0.0.5",
+    version="0.0.6",
     author="Uri Katz",
     author_email="uri.k@claroty.com",
     description="Access database (*.mdb, *.accdb) parser",
