@@ -589,7 +589,3 @@ class AccessTable(object):
                 end = end & 0xfff
             record = record_page[start: end]
         return record
-
-
-if __name__ == '__main__':
-    logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.WARNING)
