@@ -5,6 +5,9 @@ import uuid
 import math
 from datetime import datetime, timedelta
 
+LOGGER = logging.getLogger("access_parser.utils")
+
+
 TYPE_BOOLEAN = 1
 TYPE_INT8 = 2
 TYPE_INT16 = 3
@@ -126,7 +129,7 @@ def parse_money_type(parsed, prop_format):
         dot_location = -4
         special_format = '{:,.2f}'
     else:
-        logging.warning(f"parse_money_type - unsupported format: {prop_format} value {parsed} may be wrong")
+        LOGGER.warning(f"parse_money_type - unsupported format: {prop_format} value {parsed} may be wrong")
         return parsed
 
     money_float = parsed[:dot_location] + "." + parsed[dot_location:]
@@ -151,7 +154,7 @@ def parse_type(data_type, buffer, length=None, version=3, props=None):
             if parsed == 0:
                 parsed = [y for x, y in FORMAT_TO_DEFAULT_VALUE.items() if prop_format.startswith(x)]
                 if not parsed:
-                    logging.warning(f"parse_type got unknown format while parsing money field {prop_format}")
+                    LOGGER.warning(f"parse_type got unknown format while parsing money field {prop_format}")
                 else:
                     parsed = parsed[0]
             else:
@@ -186,16 +189,16 @@ def parse_type(data_type, buffer, length=None, version=3, props=None):
             parsed = get_decoded_text(buffer)
 
         if "\x00" in parsed:
-            logging.debug(f"Parsed string contains NUL (0x00) characters: {parsed}")
+            LOGGER.debug(f"Parsed string contains NUL (0x00) characters: {parsed}")
             parsed = parsed.replace("\x00", "")
     else:
-        logging.debug(f"parse_type - unsupported data type: {data_type}")
+        LOGGER.debug(f"parse_type - unsupported data type: {data_type}")
     return parsed
 
 
 def categorize_pages(db_data, page_size):
     if len(db_data) % page_size:
-        logging.warning(f"DB is not full or PAGE_SIZE is wrong. page size: {page_size} DB length {len(db_data)}")
+        LOGGER.warning(f"DB is not full or PAGE_SIZE is wrong. page size: {page_size} DB length {len(db_data)}")
     pages = {i: db_data[i:i + page_size] for i in range(0, len(db_data), page_size)}
     data_pages = {}
     table_defs = {}
@@ -209,7 +212,7 @@ def categorize_pages(db_data, page_size):
 
 def read_db_file(path):
     if not os.path.isfile(path):
-        logging.error(f"File {path} not found")
+        LOGGER.error(f"File {path} not found")
         raise FileNotFoundError(f"File {path} not found")
     with open(path, "rb") as f:
         return f.read()
