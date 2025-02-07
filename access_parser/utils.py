@@ -88,6 +88,9 @@ def numeric_to_string(bytes_num, scale=6):
     if len(full_number) > scale:
         dot_len = len(full_number) - scale
         full_number = full_number[:dot_len] + "." + full_number[dot_len:]
+    # if number is smaller than scale then pad the number with relevant leading zeros.
+    if len(full_number) <= scale:
+        full_number = '0.' + ('0'*scale + full_number)[-scale:]
     numeric_string = "-" if neg else ""
     numeric_string += full_number
     return numeric_string
