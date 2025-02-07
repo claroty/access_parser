@@ -217,7 +217,7 @@ class AccessTable(object):
         parsed_table = defaultdict(list)
         columns, *_ = self._get_table_columns()
         for i, column in columns.items():
-            parsed_table[column.col_name_str] = ""
+            parsed_table[column.col_name_str] = [] #changed to blank array to align to expected type if data was present.
         return parsed_table
 
     def parse(self):
