@@ -1,6 +1,6 @@
 import logging
 import struct
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 from construct import ConstructError
 from tabulate import tabulate
@@ -262,6 +262,11 @@ class AccessTable(object):
                 last_offset = rec_offset
                 if record:
                     self._parse_row(record)
+      
+        ## fix final output order
+        columns_sorted = OrderedDict(sorted(self.columns.items()))
+        reordered_parsed_table = OrderedDict([(column.col_name_str,self.parsed_table[column.col_name_str]) for i, column in columns_sorted.items()])
+        self.parsed_table = reordered_parsed_table
         return self.parsed_table
 
     def _parse_row(self, record):
