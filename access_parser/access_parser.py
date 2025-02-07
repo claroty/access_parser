@@ -272,21 +272,23 @@ class AccessTable(object):
         """
         original_record = record
         reverse_record = record[::-1]
-        # Records contain null bitmaps for columns. The number of bitmaps is the number of columns / 8 rounded up
-        null_table_len = (self.table_header.column_count + 7) // 8
-        if null_table_len and null_table_len < len(original_record):
-            null_table = record[-null_table_len:]
-            # Turn bitmap to a list of True False values
-            null_table = [((null_table[i // 8]) & (1 << (i % 8))) != 0 for i in range(len(null_table) * 8)]
-        else:
-            LOGGER.error(f"Failed to parse null table column count {self.table_header.column_count}")
-            return
+
         if self.version > 3:
             field_count = struct.unpack_from("h", record)[0]
             record = record[2:]
         else:
             field_count = struct.unpack_from("b", record)[0]
             record = record[1:]
+        # Records contain null bitmaps for columns. The number of bitmaps is the number of columns / 8 rounded up
+
+        null_table_len = (field_count + 7) // 8
+        if null_table_len and null_table_len < len(original_record):
+            null_table = record[-null_table_len:]
+            # Turn bitmap to a list of True False values
+            null_table = [((null_table[i // 8]) & (1 << (i % 8))) != 0 for i in range(len(null_table) * 8)]
+        else:
+            LOGGER.error(f"Failed to parse null table column count {field_count}")
+            return
 
         relative_records_column_map = {}
         # Iterate columns
@@ -319,7 +321,8 @@ class AccessTable(object):
         # The only exception is BOOL fields which are encoded in the null table
         has_value = True
         if column.column_id > len(null_table):
-            LOGGER.warning("Invalid null table. Bool values may be wrong, deleted values may be shown in the db.")
+            #new column added after row creation, not covered by null mask, in this case has_value = false
+            has_value = False
             if column.type == TYPE_BOOLEAN:
                 has_value = None
         else:
@@ -405,7 +408,8 @@ class AccessTable(object):
             col_name = column.col_name_str
             has_value = True
             if column.column_id > len(null_table):
-                LOGGER.warning("Invalid null table. null values may be shown in the db.")
+                #New column with no data so map to false
+                has_value = False
             else:
                 has_value = null_table[column.column_id]
             if not has_value:
