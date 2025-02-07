@@ -37,7 +37,10 @@ class TableObj(object):
 
 class AccessParser(object):
     def __init__(self, db_path):
-        self.db_data = read_db_file(db_path)
+        if isinstance(db_path, bytes):                  # allow to pass bytes object e.g. downloaded from cloud storage
+            self.db_data = db_path
+        else:
+            self.db_data = read_db_file(db_path)
         self._parse_file_header(self.db_data)
         self._table_defs, self._data_pages, self._all_pages = categorize_pages(self.db_data, self.page_size)
         self._tables_with_data = self._link_tables_to_data()
