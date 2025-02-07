@@ -417,14 +417,14 @@ class AccessTable(object):
                 continue
 
             if self.version == 3:
-                if i in relative_record_metadata.variable_length_jump_table:
+                if column.variable_column_number in relative_record_metadata.variable_length_jump_table:
                     jump_table_addition += 0x100
-            rel_start = relative_offsets[i]
+            rel_start = relative_offsets[column.variable_column_number]
             # If this is the last one use var_len_count as end offset
-            if i + 1 == len(relative_offsets):
+            if column.variable_column_number + 1 == len(relative_offsets):
                 rel_end = relative_record_metadata.var_len_count
             else:
-                rel_end = relative_offsets[i + 1]
+                rel_end = relative_offsets[column.variable_column_number + 1]
 
             # if rel_start and rel_end are the same there is no data in this slot
             if rel_start == rel_end:
