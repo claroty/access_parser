@@ -6,7 +6,7 @@ from construct import ConstructError
 from tabulate import tabulate
 
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
-    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER, LVPROP
+    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER, LVPROP, parse_buffer_custom
 from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file, numeric_to_string, \
     TYPE_96_BIT_17_BYTES, TYPE_OLE
 
@@ -33,6 +33,8 @@ class TableObj(object):
         self.value = val
         self.offset = offset
         self.linked_pages = []
+        self.owned_pages = []
+        self.free_space_pages = []
 
 
 class AccessParser(object):
@@ -113,7 +115,7 @@ class AccessParser(object):
         :return: dict {table : offset}
         """
         catalog_page = self._tables_with_data[2 * self.page_size]
-        access_table = AccessTable(catalog_page, self.version, self.page_size, self._data_pages, self._table_defs)
+        access_table = AccessTable(catalog_page, self.version, self.page_size, self._data_pages, self._table_defs, self._all_pages)
         catalog = access_table.parse()
         tables_mapping = {}
         for i, table_name in enumerate(catalog['Name']):
@@ -151,7 +153,7 @@ class AccessParser(object):
         if table_name != "MSysObjects" and table_name in self.extra_props:
             props = self.extra_props[table_name]
 
-        return AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, props)
+        return AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, self._all_pages, props)
 
     def parse_lvprop(self, lvprop_raw):
         try:
@@ -203,12 +205,13 @@ class AccessParser(object):
 
 
 class AccessTable(object):
-    def __init__(self, table, version, page_size, data_pages, table_defs, props=None):
+    def __init__(self, table, version, page_size, data_pages, table_defs, all_pages, props=None):
         self.version = version
         self.props = props
         self.page_size = page_size
         self._data_pages = data_pages
         self._table_defs = table_defs
+        self._all_pages = all_pages
         self.table = table
         self.parsed_table = defaultdict(list)
         self.columns, self.primary_keys, self.table_header = self._get_table_columns()
@@ -226,9 +229,9 @@ class AccessTable(object):
         data page to rows(records) and parse each record.
         :return defaultdict(list) with the parsed data -- table[column][row_index]
         """
-        if not self.table.linked_pages:
+        if not self.table.owned_pages:
             return self.create_empty_table()
-        for data_chunk in self.table.linked_pages:
+        for data_chunk in self.table.owned_pages:
             original_data = data_chunk
             parsed_data = parse_data_page_header(original_data, version=self.version)
 
@@ -450,6 +453,68 @@ class AccessTable(object):
                 parsed_type = parse_type(column.type, relative_obj_data, len(relative_obj_data), version=self.version)
             self.parsed_table[col_name].append(parsed_type)
 
+
+    def _get_usage_map(self,page_num,row_num):
+
+        ##Need to define a version config
+        OFFSET_ROW_START = 10 if self.version == 3 else 14
+        SIZE_ROW_LOCATION = 2
+        OFFSET_MASK = 0x1FFF
+        OFFSET_USAGE_MAP_START = 5
+        INVALID_PAGE_NUMBER = -1
+
+        #get page containing usage map info
+        table_buffer = self._data_pages[page_num*self.page_size]
+
+        #prepare offsets to pick relevant info from table buffer
+        row_start_offset = OFFSET_ROW_START + (SIZE_ROW_LOCATION * row_num)
+        row_end_offset = OFFSET_ROW_START + (SIZE_ROW_LOCATION * (row_num - 1))
+
+        #find row start
+        row_start = parse_buffer_custom(table_buffer,row_start_offset,'Int16ul') & OFFSET_MASK
+
+        #find row end
+        row_end = self.page_size if row_num == 0 else parse_buffer_custom(table_buffer,row_end_offset,'Int16ul') & OFFSET_MASK
+
+        #limit buffer
+        table_buffer = table_buffer[:row_end]
+
+        #map type
+        map_type = parse_buffer_custom(table_buffer,row_start,'Int8ul')
+
+        #offset start
+        um_start_offset = row_start + OFFSET_USAGE_MAP_START
+
+        ##inline handler processing
+
+        max_inline_pages = (row_end - um_start_offset) * 8
+        start_page = parse_buffer_custom(table_buffer,row_start+1,'Int32ul')
+        end_page = start_page + max_inline_pages
+
+        ##process page array
+        filtered_buffer = table_buffer[um_start_offset:]
+        filtered_buffer_size = len(filtered_buffer)
+        page_numbers = []
+        byteCount = 0
+        
+        while byteCount < filtered_buffer_size:
+            b = filtered_buffer[byteCount:byteCount+1]
+            if b != b'\x00':
+                for i in range(8):
+                    if ((int.from_bytes(b,'big') & (1 << i)) != 0):
+                        pageNumberOffset = (byteCount * 8 + i)
+                        pageNumber = (start_page + pageNumberOffset) if (pageNumberOffset >= 0) else INVALID_PAGE_NUMBER
+                        if pageNumber < start_page or pageNumber > end_page:
+                            #invalid page number 
+                            break
+                        page_numbers.append(pageNumber)
+            byteCount += 1
+
+        return page_numbers
+        
+
+
+
     def _get_table_columns(self):
         """
         Parse columns for a specific table
@@ -468,7 +533,15 @@ class AccessTable(object):
                 version=self.version,
             )
 
+
+            #add usage maps from table referenced by table head
+            #The catalog level linked pages array can be out of date following deletes. so use table header info to find accurate usage maps.
+            self.table.owned_pages = [self._all_pages[pn * self.page_size] for pn in self._get_usage_map(table_header.row_page_map_page_number,table_header.row_page_map_row_number)]
+            self.table.free_space_pages = [self._all_pages[pn * self.page_size] for pn in self._get_usage_map(table_header.free_space_page_map_page_number,table_header.free_space_page_map_row_number)]
+
+
             # Merge Data back to table_header
+            table_header['index'] = parsed_data['real_index']
             table_header['column'] = parsed_data['column']
             table_header['column_names'] = parsed_data['column_names']
             table_header['real_index_2'] = parsed_data['real_index_2']
@@ -588,7 +661,8 @@ class AccessTable(object):
             record = record_page[start:]
         else:
             end = parsed_data.record_offsets[record_offset - 1]
-            if end & 0x8000 and (end & 0xff != 0):
+
+            if end & 0x8000:# and (end & 0xff != 0): ##last byte check removed. stops valid end offsets from being parsed.
                 end = end & 0xfff
             record = record_page[start: end]
         return record
