@@ -21,7 +21,7 @@ TYPE_TEXT = 10
 TYPE_OLE = 11
 TYPE_MEMO = 12
 TYPE_GUID = 15
-TYPE_96_bit_17_BYTES = 16
+TYPE_96_BIT_17_BYTES = 16
 TYPE_COMPLEX = 18
 
 TABLE_PAGE_MAGIC = b"\x02\x01"
@@ -258,7 +258,7 @@ def parse_type(data_type, buffer, length=None, version=3, props=None):
         parsed = buffer[:16]
         guid = uuid.UUID(parsed.hex())
         parsed = str(guid)
-    elif data_type == TYPE_96_bit_17_BYTES:
+    elif data_type == TYPE_96_BIT_17_BYTES:
         parsed = buffer[:17]
     elif data_type == TYPE_TEXT:
         parsed = decodeTextValue(buffer,version)

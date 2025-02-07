@@ -8,7 +8,7 @@ from tabulate import tabulate
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
     ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER, LVPROP
 from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file, numeric_to_string, \
-    TYPE_96_bit_17_BYTES, TYPE_OLE
+    TYPE_96_BIT_17_BYTES, TYPE_OLE
 
 # Page sizes
 PAGE_SIZE_V3 = 0x800
@@ -435,7 +435,7 @@ class AccessTable(object):
                 except ConstructError:
                     LOGGER.warning("Failed to parse OLE field. Using data as bytes")
                     parsed_type = relative_obj_data
-            elif column.type == TYPE_96_bit_17_BYTES:
+            elif column.type == TYPE_96_BIT_17_BYTES:
                 if len(relative_obj_data) != 17:
                     LOGGER.warning(f"Relative numeric field has invalid length {len(relative_obj_data)}, expected 17")
                     parsed_type = relative_obj_data
