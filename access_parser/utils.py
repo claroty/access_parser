@@ -65,7 +65,7 @@ TEXT_COMPRESSION_HEADER = b'\xff\xfe'
 # https://stackoverflow.com/questions/45560782
 def mdb_date_to_readable(double_time):
     try:
-        dtime_bytes = struct.pack("Q", double_time)
+        dtime_bytes = struct.pack("q", double_time) 
 
         dtime_double = struct.unpack('<d', dtime_bytes)[0]
         dtime_frac, dtime_whole = math.modf(dtime_double)
