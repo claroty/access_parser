@@ -55,6 +55,12 @@ FORMAT_TO_DEFAULT_VALUE = {
     FORMAT_SCIENTIFIC: SCIENTIFIC_DEFAULT
 }
 
+# Character Encodings for Different Jet Versions
+ENCODING_MAP = {
+    3: "cp1252",  # Jet 3.x (Access 97 and earlier)
+    4: "utf-16-le" # Jet 4.x+ (Access 2000 and newer)
+}
+TEXT_COMPRESSION_HEADER = b'\xff\xfe'
 
 # https://stackoverflow.com/questions/45560782
 def mdb_date_to_readable(double_time):
@@ -86,16 +92,90 @@ def numeric_to_string(bytes_num, scale=6):
     numeric_string += full_number
     return numeric_string
 
+###Text type decoding functions
+def decodeTextValue(data: bytes, version: int):
+    """Decodes a compressed or uncompressed text value."""
+    
+    # Jet 3 does not support Unicode compression; decode directly
+    if version == 3:
+        return decodeUncompressedText(data, 0, len(data), version)
+    
+    # Check for Unicode compression header (Jet 4+ only)
+    isCompressed = len(data) > 1 and data.startswith(TEXT_COMPRESSION_HEADER)
+    
+    if isCompressed:
+        textBuf = ''
+        dataStart = len(TEXT_COMPRESSION_HEADER)
+        dataEnd = dataStart
+        inCompressedMode = True
 
-def get_decoded_text(bytes_data):
+        # Process each segment in the compressed data
+        while dataEnd < len(data):
+            if data[dataEnd:dataEnd+1] == b'\x00':  # End of segment
+                # Decode the current segment and toggle compression mode
+                textBuf += decodeTextSegment(data, dataStart, dataEnd, inCompressedMode, version)
+                inCompressedMode = not inCompressedMode
+                dataStart = dataEnd + 1
+            dataEnd += 1
+
+        # Handle the last segment
+        textBuf += decodeTextSegment(data, dataStart, dataEnd, inCompressedMode, version)
+        return textBuf
+
+    return decodeUncompressedText(data, 0, len(data), version)  
+
+
+def decodeTextSegment(data: bytes, dataStart: int, dataEnd: int, inCompressedMode: bool,version: int):
+    """
+    Decodes a segment of a text value into the given buffer according to the
+    given status of the segment (compressed/uncompressed).
+    """
+    if dataEnd <= dataStart:
+        return ''  # No data in the segment
+
+    if inCompressedMode:
+        # Extract the relevant segment.
+        segment = data[dataStart:dataEnd]
+        # Create a new bytearray twice as long as the segment.
+        expanded = bytearray(len(segment) * 2)
+        # Using slice assignment: assign the original bytes to every even index.
+        # The odd indices will remain 0, which is exactly the padding needed.
+        expanded[::2] = segment
+        # Convert the bytearray back to an immutable bytes object.
+        data = bytes(expanded)
+        dataStart = 0
+        dataEnd = len(data)
+
+    return decodeUncompressedText(data, dataStart, dataEnd, version)
+
+
+def decodeUncompressedText(textBytes: bytes, dataStart: int, dataEnd: int, version: int, strict: bool = False) -> str:
+    """
+    Decodes uncompressed text based on database version.
+    
+    :param textBytes: The raw bytes of text.
+    :param dataStart: Start index of the text segment.
+    :param dataEnd: End index of the text segment.
+    :param version: The database version to determine encoding.
+    :param strict: Whether to raise an error on decoding failure. If False,
+                   decoding errors are logged and replacement characters are used.
+    :return: Decoded text string.
+    """
+    encoding = ENCODING_MAP.get(version, "utf-16-le")  # Default to utf-16-le for unknown versions
+    bytesToDecode = textBytes[dataStart:dataEnd]
+    
     try:
-        decoded = bytes_data.decode('utf-8')
-    except UnicodeDecodeError:
-        try:
-            decoded = bytes_data.decode('latin1')
-        except UnicodeDecodeError:
-            decoded = bytes_data.decode('utf-8', errors='ignore')
-    return decoded
+        return bytesToDecode.decode(encoding)
+    except UnicodeDecodeError as e:
+        message = (f"Decoding error: Data could not be decoded using {encoding}. "
+                   f"Possible corruption or unexpected encoding in the data segment "
+                   f"from {dataStart} to {dataEnd}.")
+        if strict:
+            raise ValueError(message) from e
+        else:
+            LOGGER.warning(message)
+            # Return a best-effort result using replacement characters for undecodable bytes
+            return bytesToDecode.decode(encoding, errors="replace")
 
 
 def parse_money_type(parsed, prop_format):
@@ -178,19 +258,7 @@ def parse_type(data_type, buffer, length=None, version=3, props=None):
     elif data_type == TYPE_96_bit_17_BYTES:
         parsed = buffer[:17]
     elif data_type == TYPE_TEXT:
-        if version > 3:
-            # Looks like if BOM is present text is already decoded
-            if buffer.startswith(b"\xfe\xff") or buffer.startswith(b"\xff\xfe"):
-                buff = buffer[2:]
-                parsed = get_decoded_text(buff)
-            else:
-                parsed = buffer.decode("utf-16", errors='ignore')
-        else:
-            parsed = get_decoded_text(buffer)
-
-        if "\x00" in parsed:
-            LOGGER.debug(f"Parsed string contains NUL (0x00) characters: {parsed}")
-            parsed = parsed.replace("\x00", "")
+        parsed = decodeTextValue(buffer,version)
     else:
         LOGGER.debug(f"parse_type - unsupported data type: {data_type}")
     return parsed
