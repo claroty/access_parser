@@ -262,7 +262,10 @@ class AccessTable(object):
                 last_offset = rec_offset
                 if record:
                     self._parse_row(record)
-      
+                
+        if len(self.parsed_table) == 0: ##All records deleted
+            return self.create_empty_table()
+        
         ## fix final output order
         columns_sorted = OrderedDict(sorted(self.columns.items()))
         reordered_parsed_table = OrderedDict([(column.col_name_str,self.parsed_table[column.col_name_str]) for i, column in columns_sorted.items()])
