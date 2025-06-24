@@ -1,5 +1,5 @@
 from construct import *
-
+from construct import Int32ul,Int16ul,Int8ul,Int16ub,Int8ub,Int24ul,Int32sl #explicit imports to help intellisense
 
 def version_specific(version, v3_subcon, v4_subcon):
     """
@@ -125,8 +125,12 @@ def parse_table_head(buffer, version=3):
         "column_count" / Int16ul,
         "index_count" / Int32ul,
         "real_index_count" / Int32ul,
-        "row_page_map" / Int32ul,
-        "free_space_page_map" / Int32ul,
+        "row_page_map_row_number" / Int8ul,
+        "row_page_map_page_number" / Int24ul,
+        #"row_page_map" / Int32ul,
+        "free_space_page_map_row_number" / Int8ul,
+        "free_space_page_map_page_number" / Int24ul,
+        #"free_space_page_map" / Int32ul,
         "tdef_header_end" / Tell).parse(buffer)
 
 
@@ -259,3 +263,21 @@ def parse_relative_object_metadata_struct(buffer, variable_jump_tables_cnt=0, ve
                                                                  Int16ub)),
         "var_len_count" / version_specific(version, Int8ub, Int16ub),
         "relative_metadata_end" / Tell).parse(buffer)
+
+#helper unpacking function
+def parse_buffer_custom(buffer,position,type):
+    '''Custom function to parse buffers using differet construct types
+        ------
+        Jackcess Mapping for type variable
+        - get           = 'Int8ul'
+        - getShort      = 'Int16ul'
+        - getInt        = 'Int32ul'
+        - get3ByteInt   = 'Int24ul'
+        #Will add to this list as they come up
+    '''
+    type = globals()[type]
+
+    parser = Struct("value" / type)
+    buffer = buffer[position:]
+    result = parser.parse(buffer)
+    return result.value

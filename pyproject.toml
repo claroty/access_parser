@@ -1,0 +1,24 @@
+[project]
+name = "access_parser"
+version = "0.0.6"
+description = "Access database (*.mdb, *.accdb) parser"
+readme = "README.md"
+authors = [{ name = "Uri Katz", email = "uri.k@claroty.com" }]
+license = { text = "Apache Software License" }
+requires-python = ">=3.6"
+dependencies = [
+    "construct",
+    "tabulate"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent"
+]
+
+[project.urls]
+Homepage = "https://github.com/ClarotyICS/access_parser"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"

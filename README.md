@@ -6,9 +6,19 @@ Use pip: `pip install access-parser`
 
 Or install manually:
 ```bash
+# Clone the repository
 git clone https://github.com/ClarotyICS/access_parser.git
 cd access_parser
-python3 setup.py install
+
+# Create a virtual environment (recommended)
+python3 -m venv .venv # On Windows use: py -m venv .venv
+source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+
+# Install using pip (modern approach)
+pip install .
+
+# Verify installation
+python -c "import access_parser; print('Installed successfully')"
 ```
 
 # Demo

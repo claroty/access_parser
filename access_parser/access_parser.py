@@ -1,29 +1,24 @@
 import logging
 import struct
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 from construct import ConstructError
 from tabulate import tabulate
 
 from .parsing_primitives import parse_relative_object_metadata_struct, parse_table_head, parse_data_page_header, \
-    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER, LVPROP
+    ACCESSHEADER, MEMO, parse_table_data, TDEF_HEADER, LVPROP, parse_buffer_custom
 from .utils import categorize_pages, parse_type, TYPE_MEMO, TYPE_TEXT, TYPE_BOOLEAN, read_db_file, numeric_to_string, \
-    TYPE_96_bit_17_BYTES, TYPE_OLE
+    TYPE_96_BIT_17_BYTES, TYPE_OLE
+from .jetformat import BaseFormat, Jet3Format, PageTypes
 
-# Page sizes
-PAGE_SIZE_V3 = 0x800
-PAGE_SIZE_V4 = 0x1000
-
-# Versions
-VERSION_3 = 0x00
-VERSION_4 = 0x01
-VERSION_5 = 0x02
-VERSION_2010 = 0x03
-
-ALL_VERSIONS = {VERSION_3: 3, VERSION_4: 4, VERSION_5: 5, VERSION_2010: 2010}
-NEW_VERSIONS = [VERSION_4, VERSION_5, VERSION_2010]
 
 SYSTEM_TABLE_FLAGS = [-0x80000000, -0x00000002, 0x80000000, 0x00000002]
+
+# top‐2‐bit mask and length mask (30 bits)
+LONG_VALUE_TYPE_MASK    = 0xC0000000
+LONG_VALUE_LENGTH_MASK  = ~LONG_VALUE_TYPE_MASK  & 0xFFFFFFFF
+
+MAX_BYTE = 256
 
 LOGGER = logging.getLogger("access_parser")
 
@@ -33,11 +28,16 @@ class TableObj(object):
         self.value = val
         self.offset = offset
         self.linked_pages = []
+        self.owned_pages = {}
+        self.free_space_pages = {}
 
 
 class AccessParser(object):
     def __init__(self, db_path):
-        self.db_data = read_db_file(db_path)
+        if isinstance(db_path, bytes):                  # allow to pass bytes object e.g. downloaded from cloud storage
+            self.db_data = db_path
+        else:
+            self.db_data = read_db_file(db_path)
         self._parse_file_header(self.db_data)
         self._table_defs, self._data_pages, self._all_pages = categorize_pages(self.db_data, self.page_size)
         self._tables_with_data = self._link_tables_to_data()
@@ -55,32 +55,28 @@ class AccessParser(object):
                                                                                   msys_table['LvProp']) if value}
         return table_to_lval_memo
 
-    def _parse_file_header(self, db_data):
+    def _parse_file_header(self, db_data: bytes) -> None:
         """
-        Parse the basic file header and determine the Access DB version based on the parsing results.
-        :param db_data: db file data
+        Inspect the first HEADER_LENGTH bytes of db_data,
+        detect the correct Jet/ACE format, and set:
+          - self.version      : full format helper
+          - self.page_size    : pulled from the format
         """
-        try:
-            head = ACCESSHEADER.parse(db_data)
-        except ConstructError:
-            # This is a very minimal parsing of the header. If we fail this probable is not a valid mdb file
-            raise ValueError("Failed to parse DB file header. Check it is a valid access database")
-        version = head.jet_version
-        if version in NEW_VERSIONS:
-            if version == VERSION_4:
-                self.version = ALL_VERSIONS[VERSION_4]
-            elif version == VERSION_5:
-                self.version = ALL_VERSIONS[VERSION_5]
-            elif version == VERSION_2010:
-                self.version = ALL_VERSIONS[VERSION_2010]
-            self.page_size = PAGE_SIZE_V4
+        # grab exactly the bytes we need
+        header_buf = db_data[:BaseFormat.HEADER_LENGTH]
 
-        else:
-            if not version == VERSION_3:
-                LOGGER.error(f"Unknown database version {version} Trying to parse database as version 3")
-            self.version = ALL_VERSIONS[VERSION_3]
-            self.page_size = PAGE_SIZE_V3
-        LOGGER.info(f"DataBase version {version}")
+        # 1) figure out which Format subclass applies
+        try:
+            fmt = BaseFormat.get_format_from_header(header_buf)
+        except ValueError as ve:
+            LOGGER.error(f"{ve}; defaulting to Jet3Format")
+            fmt = Jet3Format()
+
+        # 2) stash it on self for everything else to use
+        self.version   = fmt
+        self.page_size = fmt.page_size
+
+        LOGGER.info(f"Detected Access format: Jet{self.version}, page_size={self.page_size}")
 
     def _link_tables_to_data(self):
         """
@@ -110,7 +106,7 @@ class AccessParser(object):
         :return: dict {table : offset}
         """
         catalog_page = self._tables_with_data[2 * self.page_size]
-        access_table = AccessTable(catalog_page, self.version, self.page_size, self._data_pages, self._table_defs)
+        access_table = AccessTable(catalog_page, self.version, self.page_size, self._data_pages, self._table_defs, self._all_pages)
         catalog = access_table.parse()
         tables_mapping = {}
         for i, table_name in enumerate(catalog['Name']):
@@ -148,7 +144,7 @@ class AccessParser(object):
         if table_name != "MSysObjects" and table_name in self.extra_props:
             props = self.extra_props[table_name]
 
-        return AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, props)
+        return AccessTable(table, self.version, self.page_size, self._data_pages, self._table_defs, self._all_pages, props)
 
     def parse_lvprop(self, lvprop_raw):
         try:
@@ -200,12 +196,13 @@ class AccessParser(object):
 
 
 class AccessTable(object):
-    def __init__(self, table, version, page_size, data_pages, table_defs, props=None):
+    def __init__(self, table, version, page_size, data_pages, table_defs, all_pages, props=None):
         self.version = version
         self.props = props
         self.page_size = page_size
         self._data_pages = data_pages
         self._table_defs = table_defs
+        self._all_pages = all_pages
         self.table = table
         self.parsed_table = defaultdict(list)
         self.columns, self.primary_keys, self.table_header = self._get_table_columns()
@@ -214,238 +211,184 @@ class AccessTable(object):
         parsed_table = defaultdict(list)
         columns, *_ = self._get_table_columns()
         for i, column in columns.items():
-            parsed_table[column.col_name_str] = ""
+            parsed_table[column.col_name_str] = [] #changed to blank array to align to expected type if data was present.
         return parsed_table
+
+    def _clean_loc(self, x: int) -> int:
+        """
+        Strip off the high-bit flags (0x8000 = deleted, 0x4000 = overflow)
+        to get the true 13-bit page offset.
+        """
+        return x & 0x1FFF
+
 
     def parse(self):
         """
-        This is the main table parsing function. We go through all of the data pages linked to the table, separate each
-        data page to rows(records) and parse each record.
-        :return defaultdict(list) with the parsed data -- table[column][row_index]
+        Main table parsing function. Iterates data pages, splits into rows, and streams parsed rows.
+        :return: OrderedDict of parsed columns
         """
-        if not self.table.linked_pages:
+        if not self.table.owned_pages:
             return self.create_empty_table()
-        for data_chunk in self.table.linked_pages:
-            original_data = data_chunk
-            parsed_data = parse_data_page_header(original_data, version=self.version)
 
-            last_offset = None
-            for rec_offset in parsed_data.record_offsets:
-                # Deleted row - Just skip it
-                if rec_offset & 0x8000:
-                    last_offset = rec_offset & 0xfff
+        for page_num, page_data in self.table.owned_pages.items():
+            parsed_page = parse_data_page_header(page_data, version=self.version)
+            # iterate each slot entry
+            for row_num, raw_loc in enumerate(parsed_page.record_offsets):
+                # skip deleted rows
+                if raw_loc & 0x8000:
                     continue
-                # Overflow page
-                if rec_offset & 0x4000:
-                    # overflow ptr is 4 bits flags, 12 bits ptr
-                    rec_ptr_offset = rec_offset & 0xfff
-                    # update last pointer to pointer without flags
-                    last_offset = rec_ptr_offset
-                    # The ptr is the offset in the current data page. we get a 4 byte record_pointer from that
-                    overflow_rec_ptr = original_data[rec_ptr_offset:rec_ptr_offset + 4]
-                    overflow_rec_ptr = struct.unpack("<I", overflow_rec_ptr)[0]
-                    record = self._get_overflow_record(overflow_rec_ptr)
-                    if record:
-                        self._parse_row(record)
+
+                # overflow row
+                if raw_loc & 0x4000:
+                    start = self._clean_loc(raw_loc)
+                    # read 4-byte overflow pointer
+                    ptr = struct.unpack_from('<I', page_data, start)[0]
+                    overflow_record = self._get_overflow_record(ptr)
+                    if overflow_record is not None:
+                        self._parse_row(overflow_record)
                     continue
-                # First record is actually the last one - from offset until the end of the data
-                if not last_offset:
-                    record = original_data[rec_offset:]
+
+                # normal row: compute cleaned start/end
+                start = self._clean_loc(raw_loc)
+                if row_num == 0:
+                    end = self.page_size
                 else:
-                    record = original_data[rec_offset:last_offset]
-                last_offset = rec_offset
+                    end = self._clean_loc(parsed_page.record_offsets[row_num - 1])
+
+                record = page_data[start:end]
                 if record:
                     self._parse_row(record)
+
+        # if all rows deleted
+        if not self.parsed_table:
+            return self.create_empty_table()
+
+        # reorder columns in output
+        columns_sorted = OrderedDict(sorted(self.columns.items(), key=lambda t: t[0]))
+        reordered = OrderedDict(
+            (col.col_name_str, self.parsed_table[col.col_name_str])
+            for _, col in columns_sorted.items()
+        )
+        self.parsed_table = reordered
         return self.parsed_table
 
-    def _parse_row(self, record):
-        """
-        parse record (row) of data. First parse all fixed-length data field and then parse the relative length data.
-        :param record: the current row data
-        :return:
-        """
-        original_record = record
-        reverse_record = record[::-1]
-        # Records contain null bitmaps for columns. The number of bitmaps is the number of columns / 8 rounded up
-        null_table_len = (self.table_header.column_count + 7) // 8
-        if null_table_len and null_table_len < len(original_record):
-            null_table = record[-null_table_len:]
-            # Turn bitmap to a list of True False values
-            null_table = [((null_table[i // 8]) & (1 << (i % 8))) != 0 for i in range(len(null_table) * 8)]
-        else:
-            LOGGER.error(f"Failed to parse null table column count {self.table_header.column_count}")
-            return
-        if self.version > 3:
-            field_count = struct.unpack_from("h", record)[0]
-            record = record[2:]
-        else:
-            field_count = struct.unpack_from("b", record)[0]
-            record = record[1:]
 
-        relative_records_column_map = {}
-        # Iterate columns
-        for i, column in self.columns.items():
-            # Fixed length columns are handled before variable length. If this is a variable length column add it to
-            # mapping and continue
-            if not column.column_flags.fixed_length:
-                relative_records_column_map[i] = column
-                continue
 
-            self._parse_fixed_length_data(record, column, null_table)
-        if relative_records_column_map:
-            relative_records_column_map = dict(sorted(relative_records_column_map.items()))
-            metadata = self._parse_dynamic_length_records_metadata(reverse_record, original_record,
-                                                                   null_table_len)
-            if not metadata:
-                return
-            if metadata.variable_length_field_offsets:
-                self._parse_dynamic_length_data(original_record, metadata, relative_records_column_map, null_table)
+    def _get_usage_map(self,page_num,row_num):
 
-    def _parse_fixed_length_data(self, original_record, column, null_table):
-        """
-        Parse fixed-length data from record
-        :param original_record: unmodified record
-        :param column: column this data belongs to
-        :param null_table: null table of the row
-        """
-        column_name = column.col_name_str
-        # The null table indicates null values in the row.
-        # The only exception is BOOL fields which are encoded in the null table
-        has_value = True
-        if column.column_id > len(null_table):
-            LOGGER.warning("Invalid null table. Bool values may be wrong, deleted values may be shown in the db.")
-            if column.type == TYPE_BOOLEAN:
-                has_value = None
-        else:
-            has_value = null_table[column.column_id]
-        # Boolean fields are encoded in the null table
-        if column.type == TYPE_BOOLEAN:
-            parsed_type = has_value
-        else:
-            if column.fixed_offset > len(original_record):
-                LOGGER.error(f"Column offset is bigger than the length of the record {column.fixed_offset}")
-                return
-            record = original_record[column.fixed_offset:]
-            parsed_type = parse_type(column.type, record, version=self.version, props=column.extra_props or None)
-            if not has_value:
-                self.parsed_table[column_name].append(None)
-                return
-        self.parsed_table[column_name].append(parsed_type)
+        ##Need to define a version config
+        OFFSET_MASK = 0x1FFF
+        INVALID_PAGE_NUMBER = -1
+        MAP_TYPE_INLINE = 0
+        MAP_TYPE_REFERENCE = 1
 
-    def _parse_dynamic_length_records_metadata(self, reverse_record, original_record, null_table_length):
-        """
-        parse the metadata of relative records. The metadata used to parse relative records is found at the end of the
-        record so reverse_record is used for parsing from the bottom up.
-        :param reverse_record: original record in reverse
-        :param original_record: unmodified record
-        :param null_table_length:
-        :return: parsed relative record metadata
-        """
-        if self.version > 3:
-            reverse_record = reverse_record[null_table_length:]
-            return parse_relative_object_metadata_struct(reverse_record, version=self.version)
-        # Parse relative metadata.
-        # Metadata is from the end of the record(reverse_record is used here)
-        variable_length_jump_table_cnt = (len(original_record) - 1) // 256
-        reverse_record = reverse_record[null_table_length:]
-        try:
-            relative_record_metadata = parse_relative_object_metadata_struct(reverse_record,
-                                                                             variable_length_jump_table_cnt,
-                                                                             self.version)
-            # relative_record_metadata = RELATIVE_OBJS.parse(reverse_record)
-            # we use this offset in original_record so we have to update the length with the null_tables
-            relative_record_metadata.relative_metadata_end = relative_record_metadata.relative_metadata_end + null_table_length
-        except ConstructError:
-            relative_record_metadata = None
-            LOGGER.error("Failed parsing record")
+        #get page containing usage map info
+        table_buffer = self._all_pages[page_num*self.page_size]
 
-        if relative_record_metadata and \
-                relative_record_metadata.variable_length_field_count != self.table_header.variable_columns:
+        #prepare offsets to pick relevant info from table buffer
+        row_start_offset = self.version.OFFSET_ROW_START + (self.version.SIZE_ROW_LOCATION * row_num)
+        row_end_offset = self.version.OFFSET_ROW_START + (self.version.SIZE_ROW_LOCATION * (row_num - 1))
 
-            # best effort - try to find variable column count in the record and parse from there
-            # this is limited to the 10 first bytes to reduce false positives.
-            # most of the time iv'e seen this there was an extra DWORD before the actual metadata
-            metadata_start = reverse_record.find(bytes([self.table_header.variable_columns]))
-            if metadata_start != -1 and metadata_start < 10:
-                reverse_record = reverse_record[metadata_start:]
-                try:
-                    relative_record_metadata = parse_relative_object_metadata_struct(reverse_record,
-                                                                                     variable_length_jump_table_cnt,
-                                                                                     self.version)
-                except ConstructError:
-                    LOGGER.error(f"Failed to parse record metadata: {original_record}")
-                relative_record_metadata.relative_metadata_end = relative_record_metadata.relative_metadata_end + \
-                                                                 metadata_start
-            else:
-                LOGGER.warning(
-                    f"Record did not parse correctly. Number of columns: {self.table_header.variable_columns}"
-                    f" number of parsed columns: {relative_record_metadata.variable_length_field_count}")
-                return None
-        return relative_record_metadata
+        #find row start
+        row_start = parse_buffer_custom(table_buffer,row_start_offset,'Int16ul') & OFFSET_MASK
 
-    def _parse_dynamic_length_data(self, original_record, relative_record_metadata,
-                                   relative_records_column_map, null_table):
-        """
-        Parse dynamic (non fixed length) records from row
-        :param original_record: full unmodified record
-        :param relative_record_metadata: parsed record metadata
-        :param relative_records_column_map: relative records colum mapping {index: column}
-        :param null_table: list indicating which columns have null value
-        """
-        relative_offsets = relative_record_metadata.variable_length_field_offsets
-        jump_table_addition = 0
-        for i, column_index in enumerate(relative_records_column_map):
-            column = relative_records_column_map[column_index]
-            col_name = column.col_name_str
-            has_value = True
-            if column.column_id > len(null_table):
-                LOGGER.warning("Invalid null table. null values may be shown in the db.")
-            else:
-                has_value = null_table[column.column_id]
-            if not has_value:
-                self.parsed_table[col_name].append(None)
-                continue
+        #find row end
+        row_end = self.page_size if row_num == 0 else parse_buffer_custom(table_buffer,row_end_offset,'Int16ul') & OFFSET_MASK
 
-            if self.version == 3:
-                if i in relative_record_metadata.variable_length_jump_table:
-                    jump_table_addition += 0x100
-            rel_start = relative_offsets[i]
-            # If this is the last one use var_len_count as end offset
-            if i + 1 == len(relative_offsets):
-                rel_end = relative_record_metadata.var_len_count
-            else:
-                rel_end = relative_offsets[i + 1]
+        #limit buffer
+        table_buffer = table_buffer[:row_end]
 
-            # if rel_start and rel_end are the same there is no data in this slot
-            if rel_start == rel_end:
-                self.parsed_table[col_name].append("")
-                continue
+        #map type
+        map_type = parse_buffer_custom(table_buffer,row_start,'Int8ul')
 
-            relative_obj_data = original_record[rel_start + jump_table_addition: rel_end + jump_table_addition]
-            # Parse types that require column data here, call parse_type on all other types
-            if column.type == TYPE_MEMO:
-                try:
-                    parsed_type = self._parse_memo(relative_obj_data)
-                except ConstructError:
-                    LOGGER.warning("Failed to parse memo field. Using data as bytes")
-                    parsed_type = relative_obj_data
-            elif column.type == TYPE_OLE:
-                try:
-                    parsed_type = self._parse_memo(relative_obj_data, return_raw=True)
-                except ConstructError:
-                    LOGGER.warning("Failed to parse OLE field. Using data as bytes")
-                    parsed_type = relative_obj_data
-            elif column.type == TYPE_96_bit_17_BYTES:
-                if len(relative_obj_data) != 17:
-                    LOGGER.warning(f"Relative numeric field has invalid length {len(relative_obj_data)}, expected 17")
-                    parsed_type = relative_obj_data
-                else:
-                    # Get scale or None
-                    scale = column.get('various', {}).get('scale', 6)
-                    parsed_type = numeric_to_string(relative_obj_data, scale)
-            else:
-                parsed_type = parse_type(column.type, relative_obj_data, len(relative_obj_data), version=self.version)
-            self.parsed_table[col_name].append(parsed_type)
+        #offset start
+        um_start_offset = row_start + self.version.OFFSET_USAGE_MAP_START
+
+        if map_type == MAP_TYPE_INLINE:
+            ##    Usage map whose map is written inline in the same page.  For Jet4, this
+            ##    type of map can usually contains a maximum of 512 pages.  Free space maps
+            ##    are always inline, used space maps may be inline or reference.  It has a
+            ##    start page, which all page numbers in its map are calculated as starting
+            ##    from.
+
+            ##inline handler processing
+            max_inline_pages = (row_end - um_start_offset) * 8
+            start_page = parse_buffer_custom(table_buffer,row_start+1,'Int32ul')
+            end_page = start_page + max_inline_pages
+
+            ##process page array
+            filtered_buffer = table_buffer[um_start_offset:]
+            filtered_buffer_size = len(filtered_buffer)
+            page_numbers = []
+            byteCount = 0
+            
+            while byteCount < filtered_buffer_size:
+                b = filtered_buffer[byteCount:byteCount+1]
+                if b != b'\x00':
+                    for i in range(8):
+                        if ((int.from_bytes(b,'big') & (1 << i)) != 0):
+                            pageNumberOffset = (byteCount * 8 + i)
+                            pageNumber = (start_page + pageNumberOffset) if (pageNumberOffset >= 0) else INVALID_PAGE_NUMBER
+                            if pageNumber < start_page or pageNumber > end_page:
+                                #invalid page number 
+                                break
+                            page_numbers.append(pageNumber)
+                byteCount += 1
+
+            return page_numbers
+        
+        elif map_type == MAP_TYPE_REFERENCE:
+            ##    Usage map whose map is written across one or more entire separate pages
+            ##    of page type USAGE_MAP.  For Jet4, this type of map can contain 32736
+            ##    pages per reference page, and a maximum of 17 reference map pages for a
+            ##    total maximum of 556512 pages (2 GB).
+
+            ##reference handler processing
+
+            max_pages_per_usage_map_page = ((self.version.page_size - self.version.OFFSET_USAGE_MAP_PAGE_DATA) * 8)
+            num_usage_pages = int((row_end - row_start - 1) / 4)
+            um_start_offset = self.version.OFFSET_USAGE_MAP_START
+
+            start_page = 0
+            end_page = (num_usage_pages * max_pages_per_usage_map_page)
+
+            # there is no "start page" for a reference usage map, so we get an
+            # extra page reference on top of the number of page references that fit
+            # in the table
+            page_numbers = []
+            for i in range(num_usage_pages):
+                map_page_pointer_offset = row_start + self.version.OFFSET_REFERENCE_MAP_PAGE_NUMBERS + (i * 4)
+                map_page_num = parse_buffer_custom(table_buffer,map_page_pointer_offset,'Int32ul')
+                if map_page_num > 0:
+                    map_page_buffer = self._all_pages[map_page_num*self.version.page_size]
+                    page_type = map_page_buffer[0]
+                    if page_type != PageTypes.USAGE_MAP:
+                        LOGGER.error(f"Looking for usage map at page {map_page_num}, but page type is {page_type}")
+                        return
+                    filtered_buffer = map_page_buffer[self.version.OFFSET_USAGE_MAP_PAGE_DATA:]
+                    
+                    #Process map
+                    buffer_start_page = (max_pages_per_usage_map_page * i)
+
+                    filtered_buffer_size = len(filtered_buffer)
+                    
+                    byteCount = 0
+                    
+                    while byteCount < filtered_buffer_size:
+                        b = filtered_buffer[byteCount:byteCount+1]
+                        if b != b'\x00':
+                            for i in range(8):
+                                if ((int.from_bytes(b,'big') & (1 << i)) != 0):
+                                    pageNumberOffset = (byteCount * 8 + i) + buffer_start_page
+                                    pageNumber = (start_page + pageNumberOffset) if (pageNumberOffset >= 0) else INVALID_PAGE_NUMBER
+                                    if pageNumber < start_page or pageNumber > end_page:
+                                        #invalid page number 
+                                        break
+                                    page_numbers.append(pageNumber)
+                        byteCount += 1
+
+            return page_numbers
+
 
     def _get_table_columns(self):
         """
@@ -465,7 +408,18 @@ class AccessTable(object):
                 version=self.version,
             )
 
+
+            #add usage maps from table referenced by table head
+            #The catalog level linked pages array can be out of date following deletes. so use table header info to find accurate usage maps.
+            owned_pages_map = self._get_usage_map(table_header.row_page_map_page_number,table_header.row_page_map_row_number)
+            self.table.owned_pages = {pn: self._all_pages[pn * self.page_size] for pn in owned_pages_map}
+
+            free_space_pages_map = self._get_usage_map(table_header.free_space_page_map_page_number,table_header.free_space_page_map_row_number)
+            self.table.free_space_pages = {pn: self._all_pages[pn * self.page_size] for pn in free_space_pages_map}
+
+
             # Merge Data back to table_header
+            table_header['index'] = parsed_data['real_index']
             table_header['column'] = parsed_data['column']
             table_header['column_names'] = parsed_data['column_names']
             table_header['real_index_2'] = parsed_data['real_index_2']
@@ -489,10 +443,13 @@ class AccessTable(object):
         # create a dict of index to column to make it easier to access. offset is used to make this zero based
         offset = min(x.column_index for x in columns)
         column_dict = {x.column_index - offset: x for x in columns}
+        
         # If column index is not unique try best effort
         if len(column_dict) != len(columns):
             # create a dict of id to column to make it easier to access
             column_dict = {x.column_id: x for x in columns}
+
+        column_dict = OrderedDict(sorted(column_dict.items()))
 
         # Add the extra properties relevant for the column
         if self.props:
@@ -545,47 +502,176 @@ class AccessTable(object):
         else:
             LOGGER.debug("LVAL type 2")
             rec_data = self._get_overflow_record(parsed_memo.record_pointer)
-            next_page = struct.unpack("I", rec_data[:4])[0]
-            # LVAL2 has data over multiple pages. The first 4 bytes of the page are the next record, then that data.
-            # Concat the data until we get a 0 next_page.
-            memo_data = b""
-            while next_page:
-                memo_data += rec_data[4:]
-                rec_data = self._get_overflow_record(next_page)
+            #adding a workaround until lval type 2 issue resolved.
+            if rec_data:
                 next_page = struct.unpack("I", rec_data[:4])[0]
-            memo_data += rec_data[4:]
+                # LVAL2 has data over multiple pages. The first 4 bytes of the page are the next record, then that data.
+                # Concat the data until we get a 0 next_page.
+                memo_data = b""
+                while next_page:
+                    memo_data += rec_data[4:]
+                    rec_data = self._get_overflow_record(next_page)
+                    next_page = struct.unpack("I", rec_data[:4])[0]
+                memo_data += rec_data[4:]
+            else:
+                memo_data = b""
         if memo_data:
             if return_raw:
                 return memo_data
             parsed_type = parse_type(memo_type, memo_data, len(memo_data), version=self.version)
             return parsed_type
 
-    def _get_overflow_record(self, record_pointer):
-        """
-        Get the actual record from a record pointer
-        :param record_pointer:
-        :return: record
-        """
-        record_offset = record_pointer & 0xff
-        page_num = record_pointer >> 8
-        record_page = self._data_pages.get(page_num * self.page_size)
-        if not record_page:
-            LOGGER.warning(f"Could not find overflow record data page overflow pointer: {record_pointer}")
-            return
-        parsed_data = parse_data_page_header(record_page, version=self.version)
-        if record_offset > len(parsed_data.record_offsets):
-            LOGGER.warning("Failed parsing overflow record offset")
-            return
-        start = parsed_data.record_offsets[record_offset]
-        if start & 0x8000:
-            start = start & 0xfff
+    def _get_overflow_record(self, record_pointer: int):
+        slot_index = record_pointer & 0xFF
+        page_num   = record_pointer >> 8
+        page_data  = self._all_pages.get(page_num * self.page_size)
+        if page_data is None:
+            LOGGER.warning(f"Missing overflow page for pointer {record_pointer}")
+            return None
+
+        parsed_page = parse_data_page_header(page_data, version=self.version)
+        raw_loc     = parsed_page.record_offsets[slot_index]
+
+        # ─── SLICE OUT THE TRUE ROW ─────────────────────────────────────
+        start = self._clean_loc(raw_loc)
+        if slot_index == 0:
+            end = self.page_size
         else:
-            LOGGER.debug(f"Overflow record flag is not present {start}")
-        if record_offset == 0:
-            record = record_page[start:]
+            end = self._clean_loc(parsed_page.record_offsets[slot_index - 1])
+
+        return page_data[start:end]
+
+
+    # starting point for a iterating parser to enable outputs to be streamed to avoid memory overflows.
+    def _parse_row(self, record):
+        """
+        Reads the row data from the given row buffer.  Leaves limit unchanged.
+        :param record: the current row data
+        :return:
+        """
+
+        original_record = record
+
+        # Records contain null bitmaps for columns. The number of bitmaps is the number of columns / 8 rounded up
+        null_table_len = (self.table_header.column_count + 7) // 8
+        if null_table_len and null_table_len < len(original_record):
+            null_table = record[-null_table_len:]
+            # Turn bitmap to a list of True False values
+            null_table = [((null_table[i // 8]) & (1 << (i % 8))) == 0 for i in range(len(null_table) * 8)]
         else:
-            end = parsed_data.record_offsets[record_offset - 1]
-            if end & 0x8000 and (end & 0xff != 0):
-                end = end & 0xfff
-            record = record_page[start: end]
-        return record
+            LOGGER.error(f"Failed to parse null table column count {self.table_header.column_count}")
+            return
+
+
+        if self.version.SIZE_ROW_VAR_COL_OFFSET != 2:
+
+            jumpColOffsets = self._readJumpTableVarColOffsets(original_record,0,null_table_len)
+
+
+        for i, column in self.columns.items():
+            
+            #get column name 
+            column_name = column.col_name_str
+            
+            #Check nullmask
+            isNull = True if column.column_id >= self.table_header.column_count else null_table[column.column_id]
+
+            # Boolean fields are encoded in the null table
+            if column.type == TYPE_BOOLEAN:
+                self.parsed_table[column_name].append(isNull)
+                continue
+
+            # remaining columns marked as null in nullmask are recorded as None
+            if isNull:
+                self.parsed_table[column_name].append(None)
+                continue
+
+            # prep variables for column parsing
+            rowStart = 0
+            colDataPos = 0
+            colDataLen = 0
+            colDataType = column.type
+
+            #if fixed length
+            if column.column_flags.fixed_length:
+
+                #identify fixed length variables
+                dataStart = rowStart + self.version.OFFSET_COLUMN_FIXED_DATA_ROW_OFFSET
+                colDataPos = dataStart + column.fixed_offset
+                colDataLen = column.length
+            
+            #if variable length
+            else:
+
+                varDataStart = None
+                varDataEnd = None
+
+                if self.version.SIZE_ROW_VAR_COL_OFFSET == 2:
+
+                    #read simple var length value
+                    varColumnsOffsetPos = (len(original_record) - null_table_len - 4) - (column.variable_column_number * 2)
+
+                    varDataStart = parse_buffer_custom(original_record,varColumnsOffsetPos,'Int16ul')
+                    varDataEnd = parse_buffer_custom(original_record,varColumnsOffsetPos-2,'Int16ul')
+                
+                else:
+
+                    #read jump-table based var length values
+                    varDataStart = jumpColOffsets[column.variable_column_number]
+                    varDataEnd = jumpColOffsets[column.variable_column_number + 1]
+
+                #prepare variable length get
+                colDataPos = rowStart + varDataStart
+                colDataLen = varDataEnd - varDataStart
+
+            if colDataLen <= 0:
+                # empty string/zero‑length
+                self.parsed_table[column_name].append("" if colDataType==TYPE_TEXT else b"")
+                continue
+
+            data = original_record[colDataPos:colDataPos+colDataLen]
+
+            # dispatch on your column.type
+            if colDataType in (TYPE_MEMO,TYPE_OLE):
+                value = self._parse_memo(data, return_raw=(colDataType == TYPE_OLE))
+            elif colDataType == TYPE_96_BIT_17_BYTES:
+                scale = column.extra_props.get("scale", column.various.get("scale",6))
+                value = numeric_to_string(data, scale)
+            else:
+                # fallback to gerneral parse_type
+                value = parse_type(colDataType, data, colDataLen, version=self.version, props=column.extra_props or None)
+
+            self.parsed_table[column_name].append(value)
+
+
+
+    def _readJumpTableVarColOffsets(self, buffer, rowStart, nullMaskSize):
+
+        # calculate offsets using jump-table info
+        rowEnd = rowStart + len(buffer) -1
+        numVarCols = buffer[rowEnd - nullMaskSize]
+
+        varColOffsets = [0] * (numVarCols + 1)
+
+        rowLen = rowEnd - rowStart + 1
+        numJumps = (rowLen - 1) // MAX_BYTE
+        colOffset = rowEnd - nullMaskSize - numJumps - 1
+
+        # if last jump is a dummy value, ignore it
+        if ((colOffset - rowStart - numVarCols) // MAX_BYTE) < numJumps:
+            numJumps -= 1
+
+        jumpsUsed = 0
+        # Fill in each of the varColOffsets entries
+        for i in range(numVarCols + 1):
+            # Skip ahead in the jump table as long as the next jump byte equals i
+            while (jumpsUsed < numJumps and
+                buffer[rowEnd - nullMaskSize - jumpsUsed - 1] == i):
+                jumps_used += 1
+
+            # The low‐order part of the offset is at col_offset - i
+            low = buffer[colOffset - i]
+            # The high‐order is jumpsUsed * MAX_BYTE
+            varColOffsets[i] = low + (jumpsUsed * MAX_BYTE)
+
+        return varColOffsets
