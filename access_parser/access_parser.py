@@ -257,6 +257,15 @@ class AccessTable(object):
                 if record:
                     self._parse_row(record)
         return self.parsed_table
+    
+    def dump(self):
+        """
+        Convert table structure to list of dictionaries.
+        :return defaultdict(list) from parsed table
+        """
+        parsed_table = self.parse()
+        rows = list(zip(*parsed_table.values(), strict=False))
+        return [dict(zip(parsed_table.keys(), row)) for row in rows]
 
     def _parse_row(self, record):
         """
