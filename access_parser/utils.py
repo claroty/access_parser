@@ -138,6 +138,36 @@ def parse_money_type(parsed, prop_format):
     return money_float
 
 
+def decompress_jet_text(data):
+    """
+    Decompress Jet Unicode compression format.
+    Text is stored as alternating runs of UTF-16LE and compressed ASCII,
+    separated by 0x00 bytes. Used when BOM (\\xff\\xfe) is present.
+    """
+    if not data:
+        return data
+    idx = 0
+    if idx < len(data) and data[idx] == 0x00:
+        idx += 1
+    result = bytearray()
+    unicode_run = True
+    while idx < len(data):
+        if data[idx] == 0x00:
+            unicode_run = not unicode_run
+            idx += 1
+            continue
+        if unicode_run:
+            if idx + 1 < len(data):
+                result.extend([data[idx], data[idx + 1]])
+                idx += 2
+            else:
+                idx += 1
+        else:
+            result.extend([data[idx], 0x00])
+            idx += 1
+    return bytes(result)
+
+
 def parse_type(data_type, buffer, length=None, version=3, props=None):
     parsed = ""
     # Bool or int8
@@ -179,10 +209,30 @@ def parse_type(data_type, buffer, length=None, version=3, props=None):
         parsed = buffer[:17]
     elif data_type == TYPE_TEXT:
         if version > 3:
-            # Looks like if BOM is present text is already decoded
+            # BOM indicates Jet Unicode compression (UTF-16LE with 0x00-stripped runs)
             if buffer.startswith(b"\xfe\xff") or buffer.startswith(b"\xff\xfe"):
                 buff = buffer[2:]
-                parsed = get_decoded_text(buff)
+                try:
+                    if buff and buff[0] == 0x00:
+                        decompressed = decompress_jet_text(buff)
+                        parsed = decompressed.decode("utf-16-le", errors="replace")
+                    elif buff:
+                        if all(b < 0x80 for b in buff):
+                            parsed = get_decoded_text(buff)
+                        else:
+                            try:
+                                candidate = buff.decode("utf-16-le")
+                                cjk_count = sum(1 for c in candidate if 0x4E00 <= ord(c) <= 0x9FFF)
+                                if len(candidate) > 0 and cjk_count / len(candidate) >= 0.3:
+                                    parsed = candidate
+                                else:
+                                    parsed = get_decoded_text(buff)
+                            except UnicodeDecodeError:
+                                parsed = get_decoded_text(buff)
+                    else:
+                        parsed = ""
+                except Exception:
+                    parsed = get_decoded_text(buff)
             else:
                 parsed = buffer.decode("utf-16", errors='ignore')
         else:
