@@ -1,0 +1,90 @@
+[project]
+name = "access-parser"
+version = "0.1.0"
+description = "Access database (*.mdb, *.accdb) parser"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = [ "LICENSE" ]
+urls = { "source" = "https://github.com/ClarotyICS/access_parser" }
+authors = [
+    { name = "Uri Katz", email = "uri.k@claroty.com" },
+    { name = "Alex Chandel", email = "637714+alexchandel@users.noreply.github.com" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.14"
+dependencies = [
+    "construct>=2.10.70",
+    "tabulate>=0.10.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+extend-select = [
+    # correctness
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes errors
+    # best practices
+    "I",    # isort import sorting
+    # "N",    # pep8-naming
+    "D",    # pydocstyle
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "S",    # flake8-bandit
+    # "T20",  # flake8-print => no print()
+    "PT",   # flake8-pytest-style
+    "C90",  # mccabe
+    "ANN",  # type annotations
+    "ARG",  # unused args
+    "RUF",  # ruff rules
+]
+
+ignore = [
+    "BLE001", # just for now - catching blind exceptions
+    "D203", # conflicts with "D211" - class docstring blank line
+    "D213", # conflicts with "D212" - func docstring first line
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "BLE001", # catching blind exceptions
+    "D", # test names document behavior more clearly than repetitive docstrings
+    "S101", # assert
+]
+
+[tool.pyright]
+exclude = [
+  "**/.*",
+  "**/node_modules",
+  ".venv",
+  ".cache",
+  "**/__pycache__",
+]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.uv]
+preview = true
+
+[dependency-groups]
+dev = [
+    "construct-typing>=0.8.1",
+    "pytest>=9.1.1",
+]

@@ -1,4 +1,10 @@
-.venv/
-access_parser.egg-info/
+# Python-generated files
+__pycache__/
+*.py[oc]
 build/
-**/__pycache__/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
