@@ -266,21 +266,23 @@ class AccessTable(object):
         """
         original_record = record
         reverse_record = record[::-1]
-        # Records contain null bitmaps for columns. The number of bitmaps is the number of columns / 8 rounded up
-        null_table_len = (self.table_header.column_count + 7) // 8
-        if null_table_len and null_table_len < len(original_record):
-            null_table = record[-null_table_len:]
-            # Turn bitmap to a list of True False values
-            null_table = [((null_table[i // 8]) & (1 << (i % 8))) != 0 for i in range(len(null_table) * 8)]
-        else:
-            LOGGER.error(f"Failed to parse null table column count {self.table_header.column_count}")
-            return
         if self.version > 3:
             field_count = struct.unpack_from("h", record)[0]
             record = record[2:]
         else:
             field_count = struct.unpack_from("b", record)[0]
             record = record[1:]
+        # Records contain null bitmaps for columns. The number of bitmaps is the number of columns / 8 rounded up.
+        # A row keeps the column count from when it was written, so a column added since then is not in its bitmap
+        null_table_len = (field_count + 7) // 8
+        if null_table_len and null_table_len < len(original_record):
+            null_table = original_record[-null_table_len:]
+            # Turn bitmap to a list of True False values. A column that is not in the row is null
+            null_table = [i < field_count and (null_table[i // 8] & (1 << (i % 8))) != 0
+                          for i in range(self.table_header.next_column_id)]
+        else:
+            LOGGER.error(f"Failed to parse null table column count {field_count}")
+            return
 
         relative_records_column_map = {}
         # Iterate columns
