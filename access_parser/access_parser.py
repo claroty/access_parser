@@ -584,8 +584,6 @@ class AccessTable(object):
         if record_offset == 0:
             record = record_page[start:]
         else:
-            end = parsed_data.record_offsets[record_offset - 1]
-            if end & 0x8000 and (end & 0xff != 0):
-                end = end & 0xfff
+            end = parsed_data.record_offsets[record_offset - 1] & 0x1fff
             record = record_page[start: end]
         return record
