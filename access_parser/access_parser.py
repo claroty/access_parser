@@ -394,7 +394,7 @@ class AccessTable(object):
         """
         relative_offsets = relative_record_metadata.variable_length_field_offsets
         jump_table_addition = 0
-        for i, column_index in enumerate(relative_records_column_map):
+        for column_index in relative_records_column_map:
             column = relative_records_column_map[column_index]
             col_name = column.col_name_str
             has_value = True
@@ -406,9 +406,11 @@ class AccessTable(object):
                 self.parsed_table[col_name].append(None)
                 continue
 
+            # A deleted column keeps its slot in rows written before the delete, so read the slot of this column
+            # rather than its position among the current columns
+            i = column.variable_column_number
             if self.version == 3:
-                if i in relative_record_metadata.variable_length_jump_table:
-                    jump_table_addition += 0x100
+                jump_table_addition = 0x100 * sum(j <= i for j in relative_record_metadata.variable_length_jump_table)
             rel_start = relative_offsets[i]
             # If this is the last one use var_len_count as end offset
             if i + 1 == len(relative_offsets):
