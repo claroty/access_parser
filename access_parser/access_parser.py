@@ -383,6 +383,68 @@ class AccessTable(object):
                 return None
         return relative_record_metadata
 
+    def _get_relative_object_data(self, var_no: int, relative_record_metadata, original_record,
+                              rel_start, rel_end):
+        """
+        Args:
+            :param var_no: variable column number
+            :param relative_record_metadata: parsed record metadata
+            :param original_record: full unmodified record
+            :param rel_start: start of the current offset
+            :param rel_end: end of the current offset
+
+        Returns: the value of the relative object data
+        """
+
+        """
+        Jet 3 records can cross a 0x100-byte boundary. Access stores the
+        variable-length offsets relative to the current 0x100-byte block,
+        while variable_length_jump_table tells where another 0x100 bytes
+        have to be added.
+        Start and end must be calculated separately. This is important
+        when a field itself crosses the 0x100 boundary.
+        Example:
+               start offset = 253
+               end offset = 5
+
+        In that case the field spans the boundary:
+               actual start = 253
+               actual end = 5 + 0x100
+        """
+        if self.version == 3:
+            # jump table contains variable-column boundaries.
+            start_jump = sum(
+                0x100
+                for jump in relative_record_metadata.variable_length_jump_table
+                if var_no >= jump
+            )
+
+            next_var_no = var_no + 1
+
+            end_jump = sum(
+                0x100
+                for jump in relative_record_metadata.variable_length_jump_table
+                if next_var_no >= jump
+            )
+        else:
+            start_jump = 0
+            end_jump = 0
+
+        """
+        Without this correction, fields after a jump-table boundary would be
+        read from the wrong physical location in the record. This was especially
+        problematic for Memo fields: incorrect bytes were interpreted as a Memo
+        header, producing an invalid overflow-record pointer. _get_overflow_record()
+        then returned None and _parse_memo() failed with a TypeError (NoneType)        
+        """
+        relative_obj_data = original_record[
+            rel_start + start_jump:
+            rel_end + end_jump
+        ]
+
+        return relative_obj_data
+
+
     def _parse_dynamic_length_data(self, original_record, relative_record_metadata,
                                    relative_records_column_map, null_table):
         """
@@ -394,34 +456,40 @@ class AccessTable(object):
         """
         relative_offsets = relative_record_metadata.variable_length_field_offsets
         jump_table_addition = 0
+
         for i, column_index in enumerate(relative_records_column_map):
             column = relative_records_column_map[column_index]
             col_name = column.col_name_str
+
+            var_no = column.variable_column_number
+
             has_value = True
             if column.column_id > len(null_table):
                 LOGGER.warning("Invalid null table. null values may be shown in the db.")
             else:
                 has_value = null_table[column.column_id]
+
             if not has_value:
                 self.parsed_table[col_name].append(None)
                 continue
 
-            if self.version == 3:
-                if i in relative_record_metadata.variable_length_jump_table:
-                    jump_table_addition += 0x100
-            rel_start = relative_offsets[i]
-            # If this is the last one use var_len_count as end offset
-            if i + 1 == len(relative_offsets):
-                rel_end = relative_record_metadata.var_len_count
+            # Variable-length metadata is indexed by variable column number,
+            # NOT by the position of the column in relative_records_column_map.
+            rel_start = relative_offsets[var_no]
+
+            if var_no + 1 < len(relative_offsets):
+                rel_end = relative_offsets[var_no + 1]
             else:
-                rel_end = relative_offsets[i + 1]
+                rel_end = relative_record_metadata.var_len_count
+
+            relative_obj_data = self._get_relative_object_data(var_no, relative_record_metadata,
+                                                               original_record, rel_start, rel_end)
 
             # if rel_start and rel_end are the same there is no data in this slot
             if rel_start == rel_end:
                 self.parsed_table[col_name].append("")
                 continue
 
-            relative_obj_data = original_record[rel_start + jump_table_addition: rel_end + jump_table_addition]
             # Parse types that require column data here, call parse_type on all other types
             if column.type == TYPE_MEMO:
                 try:
@@ -529,6 +597,7 @@ class AccessTable(object):
     def _parse_memo(self, relative_obj_data, return_raw=False):
         LOGGER.debug(f"Parsing memo field {relative_obj_data}")
         parsed_memo = MEMO.parse(relative_obj_data)
+
         memo_type = TYPE_TEXT
         if parsed_memo.memo_length & 0x80000000:
             LOGGER.debug("memo data inline")
